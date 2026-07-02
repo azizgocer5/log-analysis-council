@@ -5,7 +5,7 @@ Stage 2: Cross-evaluation of each other's analyses
 Stage 3: Chairman synthesizes final prioritized prescription list
 """
 
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Callable, Awaitable
 import asyncio
 
 from .openrouter import query_model
@@ -49,6 +49,8 @@ async def stage1_expert_analyses(
     log_report: str,
     user_query: Optional[str] = None,
     model: Optional[str] = None,
+    on_progress: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    persona_dataset: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Stage 1: Each persona analyzes the flight log independently.
@@ -57,6 +59,8 @@ async def stage1_expert_analyses(
         log_report: Structured text report from log_parser
         user_query: Optional user question to focus the analysis
         model: Model identifier override
+        on_progress: Optional progress callback function
+        persona_dataset: Optional persona-specific parsed data dictionary
 
     Returns:
         List of dicts with persona_id, persona info, and response
@@ -65,9 +69,31 @@ async def stage1_expert_analyses(
     is_local = (active_model == "qwen3:8b")
     stagger_delay = 0.2 if is_local else 5.5
 
-    # Build the user message
-    if user_query:
-        user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
+    persona_ids = get_persona_names()
+
+    async def run_single_persona(pid: str) -> Dict[str, Any]:
+        persona = PERSONAS[pid]
+        if on_progress:
+            await on_progress("stage1_persona_start", {
+                "persona_id": pid,
+                "persona_name": persona["name"],
+                "persona_title": persona["title"],
+                "persona_icon": persona["icon"],
+                "persona_color": persona["color"],
+            })
+
+        # Dynamically build user message based on persona_dataset if available
+        if persona_dataset:
+            from .log_parser import format_context_block
+            context_block = format_context_block(pid, persona_dataset)
+            if user_query:
+                user_message = f"{context_block}\n\nKullanıcının sorusu: {user_query}\n\nBu soruyu kendi uzmanlık alanın çerçevesinde yanıtla. Sağlanan verileri kullanarak somut, veri destekli cevaplar ve reçeteler sun."
+            else:
+                user_message = f"{context_block}\n\nBu verileri kendi uzmanlık alanın çerçevesinde analiz et. Bulgularını ve reçetelerini sun."
+        else:
+            # Fallback to the shared log_report message
+            if user_query:
+                user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
 
 Kullanıcının sorusu: {user_query}
 
@@ -76,8 +102,8 @@ Bu soruyu kendi uzmanlık alanın çerçevesinde yanıtla. Analiz verilerini kul
 --- UÇUŞ LOG VERİLERİ ---
 {log_report}
 """
-    else:
-        user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
+            else:
+                user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
 
 Bu verileri kendi uzmanlık alanın çerçevesinde analiz et. Bulgularını ve reçetelerini sun.
 
@@ -85,23 +111,9 @@ Bu verileri kendi uzmanlık alanın çerçevesinde analiz et. Bulgularını ve r
 {log_report}
 """
 
-    # Query all personas sequentially with stagger delay to prevent 429 rate limits
-    responses = []
-    persona_ids = get_persona_names()
-    for i, pid in enumerate(persona_ids):
-        if i > 0:
-            print(f"Staggering Stage 1 expert query for {pid}...")
-            await asyncio.sleep(stagger_delay)
-        persona = PERSONAS[pid]
         resp = await _query_persona(pid, user_message, persona["system_prompt"], active_model)
-        responses.append(resp)
-
-    # Enrich with persona info
-    results = []
-    for resp in responses:
-        pid = resp["persona_id"]
-        persona = PERSONAS[pid]
-        results.append({
+        
+        result = {
             "persona_id": pid,
             "persona_name": persona["name"],
             "persona_title": persona["title"],
@@ -109,7 +121,28 @@ Bu verileri kendi uzmanlık alanın çerçevesinde analiz et. Bulgularını ve r
             "persona_color": persona["color"],
             "response": resp["response"],
             "error": resp.get("error", False),
-        })
+        }
+        
+        if on_progress:
+            await on_progress("stage1_persona_complete", {
+                "persona_id": pid,
+                "data": result,
+            })
+        return result
+
+    if is_local:
+        # Sequential execution with stagger delay to prevent overloading local models
+        results = []
+        for i, pid in enumerate(persona_ids):
+            if i > 0:
+                print(f"Staggering Stage 1 expert query for {pid}...")
+                await asyncio.sleep(stagger_delay)
+            res = await run_single_persona(pid)
+            results.append(res)
+    else:
+        # Parallel execution for cloud models to drastically reduce wait time
+        tasks = [run_single_persona(pid) for pid in persona_ids]
+        results = await asyncio.gather(*tasks)
 
     return results
 
@@ -123,6 +156,8 @@ async def stage2_cross_evaluation(
     stage1_results: List[Dict[str, Any]],
     user_query: Optional[str] = None,
     model: Optional[str] = None,
+    on_progress: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    persona_dataset: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Stage 2: Each persona evaluates the others' analyses.
@@ -132,6 +167,8 @@ async def stage2_cross_evaluation(
         stage1_results: Results from Stage 1
         user_query: Optional original user query
         model: Model identifier override
+        on_progress: Optional progress callback function
+        persona_dataset: Optional persona-specific parsed data dictionary
 
     Returns:
         List of cross-evaluation results
@@ -169,26 +206,34 @@ Her uzmanın analizini kendi uzmanlık alanın perspektifinden değerlendir:
     # Shorten log report for stage 2 (use first 2000 chars as summary)
     log_summary = log_report[:3000] + "\n... [devamı kısaltıldı]" if len(log_report) > 3000 else log_report
 
-    responses = []
     persona_ids = get_persona_names()
-    for i, pid in enumerate(persona_ids):
-        if i > 0:
-            print(f"Staggering Stage 2 expert query for {pid}...")
-            await asyncio.sleep(stagger_delay)
+
+    async def run_single_persona_eval(pid: str) -> Dict[str, Any]:
         persona = PERSONAS[pid]
+        if on_progress:
+            await on_progress("stage2_persona_start", {
+                "persona_id": pid,
+                "persona_name": persona["name"],
+                "persona_title": persona["title"],
+                "persona_icon": persona["icon"],
+                "persona_color": persona["color"],
+            })
+        
+        # Grounding: use persona specific context block if available
+        if persona_dataset:
+            from .log_parser import format_context_block
+            local_summary = format_context_block(pid, persona_dataset)
+        else:
+            local_summary = log_summary
+
         user_message = eval_prompt_template.format(
             query_section=query_section,
             analyses=analyses_text,
-            log_summary=log_summary,
+            log_summary=local_summary,
         )
         resp = await _query_persona(pid, user_message, persona["system_prompt"], active_model)
-        responses.append(resp)
-
-    results = []
-    for resp in responses:
-        pid = resp["persona_id"]
-        persona = PERSONAS[pid]
-        results.append({
+        
+        result = {
             "persona_id": pid,
             "persona_name": persona["name"],
             "persona_title": persona["title"],
@@ -196,7 +241,28 @@ Her uzmanın analizini kendi uzmanlık alanın perspektifinden değerlendir:
             "persona_color": persona["color"],
             "evaluation": resp["response"],
             "error": resp.get("error", False),
-        })
+        }
+        
+        if on_progress:
+            await on_progress("stage2_persona_complete", {
+                "persona_id": pid,
+                "data": result,
+            })
+        return result
+
+    if is_local:
+        # Sequential execution with stagger delay to prevent overloading local models
+        results = []
+        for i, pid in enumerate(persona_ids):
+            if i > 0:
+                print(f"Staggering Stage 2 expert query for {pid}...")
+                await asyncio.sleep(stagger_delay)
+            res = await run_single_persona_eval(pid)
+            results.append(res)
+    else:
+        # Parallel execution for cloud models to drastically reduce wait time
+        tasks = [run_single_persona_eval(pid) for pid in persona_ids]
+        results = await asyncio.gather(*tasks)
 
     return results
 
@@ -211,6 +277,7 @@ async def stage3_chairman_synthesis(
     stage2_results: List[Dict[str, Any]],
     user_query: Optional[str] = None,
     model: Optional[str] = None,
+    persona_dataset: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes all analyses into final prescription.
@@ -221,6 +288,7 @@ async def stage3_chairman_synthesis(
         stage2_results: Cross-evaluations
         user_query: Optional original user query
         model: Model identifier override
+        persona_dataset: Optional persona-specific parsed data dictionary
 
     Returns:
         Chairman's final synthesis
@@ -241,6 +309,14 @@ async def stage3_chairman_synthesis(
         if not r.get("error")
     ])
 
+    # Grounding: use the structured general context for the chairman reference instead of truncated raw report
+    if persona_dataset:
+        import json
+        genel_info = json.dumps(persona_dataset.get("genel", {}), ensure_ascii=False, indent=2)
+        flight_data = f"### Genel Uçuş Bilgisi (Sadece Bu Değerleri Kullan)\n```json\n{genel_info}\n```"
+    else:
+        flight_data = log_report[:4000]
+
     chairman_prompt = f"""Sen UAV Log Analysis Council'ın Baş Mühendisisin. 5 uzman bir VTOL drone'un uçuş loglarını analiz etti ve birbirlerinin analizlerini değerlendirdi.
 
 {f"Kullanıcının orijinal sorusu: {user_query}" if user_query else "Görev: Kapsamlı uçuş logu analizi ve PID tuning reçetesi"}
@@ -253,8 +329,8 @@ Tüm verileri sentezleyerek nihai raporunu oluştur. Formatına uy.
 --- AŞAMA 2: ÇAPRAZ DEĞERLENDİRMELER ---
 {stage2_text}
 
---- UÇUŞ LOG VERİLERİ ---
-{log_report[:4000]}
+--- REFERANS UÇUŞ LOG VERİLERİ ---
+{flight_data}
 """
 
     messages = [
@@ -290,6 +366,7 @@ async def run_uav_council(
     log_report: str,
     user_query: Optional[str] = None,
     model: Optional[str] = None,
+    persona_dataset: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run the complete 3-stage UAV analysis council.
@@ -298,12 +375,13 @@ async def run_uav_council(
         log_report: Structured text report from log parser
         user_query: Optional user question
         model: Optional model override
+        persona_dataset: Optional persona-specific parsed data dictionary
 
     Returns:
         Dict with stage1, stage2, stage3 results
     """
     # Stage 1
-    stage1 = await stage1_expert_analyses(log_report, user_query, model)
+    stage1 = await stage1_expert_analyses(log_report, user_query, model, persona_dataset=persona_dataset)
 
     if not any(not r.get("error") for r in stage1):
         return {
@@ -313,10 +391,10 @@ async def run_uav_council(
         }
 
     # Stage 2
-    stage2 = await stage2_cross_evaluation(log_report, stage1, user_query, model)
+    stage2 = await stage2_cross_evaluation(log_report, stage1, user_query, model, persona_dataset=persona_dataset)
 
     # Stage 3
-    stage3 = await stage3_chairman_synthesis(log_report, stage1, stage2, user_query, model)
+    stage3 = await stage3_chairman_synthesis(log_report, stage1, stage2, user_query, model, persona_dataset=persona_dataset)
 
     return {
         "stage1": stage1,
@@ -333,6 +411,8 @@ async def ask_council_question(
     question: str,
     log_report: Optional[str] = None,
     model: Optional[str] = None,
+    on_progress: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    persona_dataset: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Ask a free-form question to the council.
@@ -343,21 +423,29 @@ async def ask_council_question(
     active_model = model or COUNCIL_MODEL
 
     # Stage 1: Get expert opinions
-    if log_report:
-        stage1 = await stage1_expert_analyses(log_report, question, active_model)
+    if log_report or persona_dataset:
+        stage1 = await stage1_expert_analyses(
+            log_report or "", question, active_model, on_progress=on_progress, persona_dataset=persona_dataset
+        )
     else:
-        # Without log data, just ask the question sequentially (using stagger or not depending on local)
+        # Without log data, run with progress support and parallel/sequential choice
         is_local = (active_model == "qwen3:8b")
         stagger_delay = 0.2 if is_local else 5.5
-
-        stage1 = []
         persona_ids = get_persona_names()
-        for i, pid in enumerate(persona_ids):
-            if i > 0:
-                await asyncio.sleep(stagger_delay)
+
+        async def run_single_persona_question(pid: str) -> Dict[str, Any]:
             persona = PERSONAS[pid]
+            if on_progress:
+                await on_progress("stage1_persona_start", {
+                    "persona_id": pid,
+                    "persona_name": persona["name"],
+                    "persona_title": persona["title"],
+                    "persona_icon": persona["icon"],
+                    "persona_color": persona["color"],
+                })
+            
             resp = await _query_persona(pid, question, persona["system_prompt"], active_model)
-            stage1.append({
+            result = {
                 "persona_id": pid,
                 "persona_name": persona["name"],
                 "persona_title": persona["title"],
@@ -365,7 +453,24 @@ async def ask_council_question(
                 "persona_color": persona["color"],
                 "response": resp["response"],
                 "error": resp.get("error", False),
-            })
+            }
+            if on_progress:
+                await on_progress("stage1_persona_complete", {
+                    "persona_id": pid,
+                    "data": result,
+                })
+            return result
+
+        if is_local:
+            stage1 = []
+            for i, pid in enumerate(persona_ids):
+                if i > 0:
+                    await asyncio.sleep(stagger_delay)
+                res = await run_single_persona_question(pid)
+                stage1.append(res)
+        else:
+            tasks = [run_single_persona_question(pid) for pid in persona_ids]
+            stage1 = await asyncio.gather(*tasks)
 
     # Stage 3: Chairman synthesis (skip Stage 2 for questions to save time/cost)
     stage3 = await stage3_chairman_synthesis(
@@ -374,6 +479,7 @@ async def ask_council_question(
         [],  # No cross-evaluation for questions
         question,
         active_model,
+        persona_dataset=persona_dataset,
     )
 
     return {

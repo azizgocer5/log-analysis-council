@@ -135,32 +135,92 @@ function App() {
             break;
 
           case 'stage1_start':
-            setAnalysisState((prev) => ({
-              ...prev,
-              status: 'analyzing',
-              currentStage: 1,
-            }));
+            setAnalysisState((prev) => {
+              const initialStage1 = personas?.personas?.map(p => ({
+                persona_id: p.id,
+                persona_name: p.name,
+                persona_title: p.title,
+                persona_icon: p.icon,
+                persona_color: p.color,
+                response: '',
+                status: 'pending',
+              })) || [];
+              return {
+                ...prev,
+                status: 'analyzing',
+                currentStage: 1,
+                stage1: initialStage1,
+              };
+            });
+            break;
+
+          case 'stage1_persona_start':
+            setAnalysisState((prev) => {
+              const updated = prev.stage1?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
+              ) || [];
+              return { ...prev, stage1: updated };
+            });
+            break;
+
+          case 'stage1_persona_complete':
+            setAnalysisState((prev) => {
+              const updated = prev.stage1?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
+              ) || [];
+              return { ...prev, stage1: updated };
+            });
             break;
 
           case 'stage1_complete':
             setAnalysisState((prev) => ({
               ...prev,
-              stage1: event.data,
+              stage1: event.data.map(p => ({ ...p, status: 'complete' })),
               currentStage: 1,
             }));
             break;
 
           case 'stage2_start':
-            setAnalysisState((prev) => ({
-              ...prev,
-              currentStage: 2,
-            }));
+            setAnalysisState((prev) => {
+              const initialStage2 = personas?.personas?.map(p => ({
+                persona_id: p.id,
+                persona_name: p.name,
+                persona_title: p.title,
+                persona_icon: p.icon,
+                persona_color: p.color,
+                evaluation: '',
+                status: 'pending',
+              })) || [];
+              return {
+                ...prev,
+                currentStage: 2,
+                stage2: initialStage2,
+              };
+            });
+            break;
+
+          case 'stage2_persona_start':
+            setAnalysisState((prev) => {
+              const updated = prev.stage2?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
+              ) || [];
+              return { ...prev, stage2: updated };
+            });
+            break;
+
+          case 'stage2_persona_complete':
+            setAnalysisState((prev) => {
+              const updated = prev.stage2?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
+              ) || [];
+              return { ...prev, stage2: updated };
+            });
             break;
 
           case 'stage2_complete':
             setAnalysisState((prev) => ({
               ...prev,
-              stage2: event.data,
+              stage2: event.data.map(p => ({ ...p, status: 'complete' })),
               currentStage: 2,
             }));
             break;
@@ -177,6 +237,17 @@ function App() {
               ...prev,
               stage3: event.data,
               currentStage: 3,
+            }));
+            break;
+
+          case 'report_saved':
+            setAnalysisState((prev) => ({
+              ...prev,
+              reportSaved: {
+                path: event.path,
+                filename: event.filename,
+                content: event.content,
+              },
             }));
             break;
 
@@ -261,17 +332,47 @@ function App() {
             break;
 
           case 'stage1_start':
-            setAnalysisState((prev) => ({
-              ...prev,
-              status: 'analyzing',
-              currentStage: 1,
-            }));
+            setAnalysisState((prev) => {
+              const initialStage1 = personas?.personas?.map(p => ({
+                persona_id: p.id,
+                persona_name: p.name,
+                persona_title: p.title,
+                persona_icon: p.icon,
+                persona_color: p.color,
+                response: '',
+                status: 'pending',
+              })) || [];
+              return {
+                ...prev,
+                status: 'analyzing',
+                currentStage: 1,
+                stage1: initialStage1,
+              };
+            });
+            break;
+
+          case 'stage1_persona_start':
+            setAnalysisState((prev) => {
+              const updated = prev.stage1?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
+              ) || [];
+              return { ...prev, stage1: updated };
+            });
+            break;
+
+          case 'stage1_persona_complete':
+            setAnalysisState((prev) => {
+              const updated = prev.stage1?.map(p => 
+                p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
+              ) || [];
+              return { ...prev, stage1: updated };
+            });
             break;
 
           case 'stage1_complete':
             setAnalysisState((prev) => ({
               ...prev,
-              stage1: event.data,
+              stage1: event.data.map(p => ({ ...p, status: 'complete' })),
             }));
             break;
 
@@ -286,6 +387,17 @@ function App() {
             setAnalysisState((prev) => ({
               ...prev,
               stage3: event.data,
+            }));
+            break;
+
+          case 'report_saved':
+            setAnalysisState((prev) => ({
+              ...prev,
+              reportSaved: {
+                path: event.path,
+                filename: event.filename,
+                content: event.content,
+              },
             }));
             break;
 

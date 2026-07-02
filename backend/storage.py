@@ -170,3 +170,64 @@ def update_conversation_title(conversation_id: str, title: str):
 
     conversation["title"] = title
     save_conversation(conversation)
+
+
+def save_report_as_markdown(
+    log_filenames: List[str],
+    user_query: Optional[str],
+    stage1: Optional[List[Dict[str, Any]]],
+    stage2: Optional[List[Dict[str, Any]]],
+    stage3: Dict[str, Any]
+) -> str:
+    """
+    Saves the final council report as a markdown file in data/reports/.
+    Returns the path of the saved file.
+    """
+    reports_dir = os.path.join("data", "reports")
+    Path(reports_dir).mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"council_report_{timestamp}.md"
+    file_path = os.path.join(reports_dir, filename)
+
+    lines = []
+    lines.append("# UAV Uçuş Log Analiz Konseyi Raporu")
+    lines.append(f"**Oluşturulma Tarihi:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if log_filenames:
+        lines.append(f"**Analiz Edilen Log(lar):** {', '.join(log_filenames)}")
+    if user_query:
+        lines.append(f"**Kullanıcı Odağı/Sorusu:** {user_query}")
+    lines.append("\n---\n")
+
+    # Stage 3 - Chairman Synthesis (Nihai Rapor)
+    lines.append(f"## {stage3.get('persona_icon', '👨‍✈️')} {stage3.get('persona_name', 'Baş Mühendis')} Sentezi")
+    lines.append(f"*{stage3.get('persona_title', 'Council Nihai Raporu')}*\n")
+    lines.append(stage3.get("response", ""))
+    lines.append("\n")
+
+    # Stage 2 - Cross Evaluations
+    if stage2:
+        lines.append("\n---\n")
+        lines.append("## ⚖️ Aşama 2: Uzman Çapraz Değerlendirmeleri\n")
+        for eval_res in stage2:
+            if not eval_res.get("error"):
+                lines.append(f"### {eval_res.get('persona_icon', '🔬')} {eval_res.get('persona_name')} ({eval_res.get('persona_title')}) Çapraz Yorumu\n")
+                lines.append(eval_res.get("evaluation", ""))
+                lines.append("\n")
+
+    # Stage 1 - Bireysel Uzman Analizleri
+    if stage1:
+        lines.append("\n---\n")
+        lines.append("## 🔬 Aşama 1: Bireysel Uzman Analizleri\n")
+        for exp_res in stage1:
+            if not exp_res.get("error"):
+                lines.append(f"### {exp_res.get('persona_icon', '🔬')} {exp_res.get('persona_name')} ({exp_res.get('persona_title')}) Analizi\n")
+                lines.append(exp_res.get("response", ""))
+                lines.append("\n")
+
+    content = "\n".join(lines)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return file_path
+

@@ -270,6 +270,12 @@
   background: var(--bg-tertiary);
   padding: 3px;
   border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.model-toggle .mode-btn {
+  font-size: 11px;
+  padding: 5px 6px;
 }
 
 .mode-btn {

@@ -474,7 +474,7 @@ def extract_actuator_data(ulog: ULog) -> Dict[str, Any]:
 
 
 def extract_pid_parameters(ulog: ULog) -> Dict[str, Any]:
-    """Extract PID-related parameters from the log."""
+    """Extract PID-related and sensor/safety parameters from the log."""
     params = ulog.initial_parameters
     pid_params = {}
 
@@ -484,6 +484,13 @@ def extract_pid_parameters(ulog: ULog) -> Dict[str, Any]:
         "MPC_Z_", "MPC_XY_", "MPC_ACC_",
         "FW_R_", "FW_P_", "FW_Y_",
         "VT_",  # VTOL transition params
+        "IMU_",  # IMU filters / notch filters
+        "EKF2_", # EKF2 gates / parameters
+        "COM_",  # Commander safety actions
+        "BAT_",  # Battery thresholds
+        "NAV_",  # Navigation limits / failsafes
+        "GF_",   # Geofence
+        "RTL_",  # Return-to-launch rules
     ]
 
     for key, value in sorted(params.items()):
@@ -567,6 +574,9 @@ def parse_single_log(filepath: str) -> Dict[str, Any]:
         "pid_parameters": extract_pid_parameters(ulog),
         "failsafe_events": extract_failsafe_events(ulog),
     }
+
+    # Add the persona specific datasets
+    report["persona_dataset"] = build_persona_dataset(ulog, report)
 
     return report
 
@@ -823,3 +833,180 @@ def discover_logs(log_dir: str) -> List[Dict[str, Any]]:
     # Sort by modification time
     logs.sort(key=lambda x: x["modified"])
     return logs
+
+
+# ---------------------------------------------------------------------------
+# Persona-Specific Grounding and Context Formatting
+# ---------------------------------------------------------------------------
+
+def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a persona-specific dataset for each of the 5 expert personas,
+    incorporating the grounding and context-reduction design from ornek_log_extractor.py."""
+    dataset = {}
+
+    # Helper to get parameter subsets
+    all_params = report.get("pid_parameters", {})
+    def filter_params(prefixes: List[str]) -> Dict[str, Any]:
+        return {k: v for k, v in all_params.items() if any(k.startswith(p) for p in prefixes)}
+
+    # Helper to filter logged messages
+    logged_messages = report.get("failsafe_events", {}).get("logged_messages", [])
+    def filter_messages(keywords: List[str]) -> List[Dict[str, Any]]:
+        return [
+            m for m in logged_messages
+            if any(k.lower() in m["message"].lower() for k in keywords)
+        ]
+
+    # --- 1. Test Pilot / General Flight Dataset ---
+    test_pilot = {"veri_durumu": "ok"}
+    pos_data = _get_topic_data(ulog, "vehicle_local_position")
+    if pos_data is None:
+        test_pilot["altitude"] = "veri yok (vehicle_local_position bulunamadı)"
+    else:
+        z = -np.asarray(pos_data.get("z", [0]))
+        t = np.asarray(pos_data.get("timestamp", [0])) / 1e6
+        test_pilot["altitude_min_m"] = round(float(np.min(z)), 2) if len(z) > 0 else 0.0
+        test_pilot["altitude_max_m"] = round(float(np.max(z)), 2) if len(z) > 0 else 0.0
+        test_pilot["duration_sec"] = round(float(t[-1] - t[0]), 1) if len(t) > 1 else 0.0
+
+        x = np.asarray(pos_data.get("x", [0]))
+        y = np.asarray(pos_data.get("y", [0]))
+        if len(x) > 0 and len(y) > 0:
+            test_pilot["hover_xy_stddev_m"] = round(float(np.sqrt(np.std(x) ** 2 + np.std(y) ** 2)), 3)
+        else:
+            test_pilot["hover_xy_stddev_m"] = 0.0
+
+    status_data = _get_topic_data(ulog, "vehicle_status")
+    if status_data is not None and "nav_state" in status_data:
+        states, counts = np.unique(status_data["nav_state"], return_counts=True)
+        test_pilot["nav_state_gozlemleri"] = {int(s): int(c) for s, c in zip(states, counts)}
+
+    # Merge actuators into test_pilot for holistic general/performance context
+    test_pilot["actuators"] = report.get("actuators", {})
+    dataset["test_pilot"] = test_pilot
+    dataset["genel"] = test_pilot
+
+    # --- 2. PID Expert (Prof. Aerodinamik) Dataset ---
+    att_tracking = report.get("attitude_tracking", {})
+    pid_expert = {"veri_durumu": "ok"}
+    if "error" in att_tracking:
+        pid_expert["veri_durumu"] = f"veri yok ({att_tracking['error']})"
+    else:
+        pid_expert.update(att_tracking)
+    pid_expert["ilgili_parametreler"] = filter_params([
+        "MC_ROLLRATE", "MC_PITCHRATE", "MC_YAWRATE", "MC_ROLL_P", "MC_PITCH_P", "MC_YAW_P"
+    ])
+    dataset["pid_expert"] = pid_expert
+
+    # --- 3. Vibration Analyst (Saha Mühendisi Kemal) Dataset ---
+    vib_data = report.get("vibration", {})
+    vibration_analyst = {"veri_durumu": "ok"}
+    
+    # Run Gyro FFT just like ornek_log_extractor.py
+    gyro_fft_success = False
+    gyro = _get_topic_data(ulog, "sensor_combined") or _get_topic_data(ulog, "sensor_gyro")
+    if gyro is not None:
+        field = "x" if "x" in gyro else "gyro_rad[0]"
+        if field in gyro:
+            t = np.asarray(gyro["timestamp"]) / 1e6
+            signal = np.asarray(gyro[field])
+            fft_window = min(4096, 2 ** int(math.log2(len(signal)))) if len(signal) > 0 else 0
+            if fft_window >= 128:
+                dt = float(np.median(np.diff(t)))
+                fs = 1.0 / dt if dt > 0 else 0
+                if fs > 0:
+                    window = signal[:fft_window] - np.mean(signal[:fft_window])
+                    fft_vals = np.abs(np.fft.rfft(window))
+                    freqs = np.fft.rfftfreq(fft_window, d=dt)
+
+                    mask = freqs > 5.0
+                    idx = np.argsort(fft_vals[mask])[::-1][:3]
+                    peaks = [
+                        {"freq_hz": round(float(freqs[mask][i]), 1), "magnitude": round(float(fft_vals[mask][i]), 2)}
+                        for i in idx
+                    ]
+                    vibration_analyst["sample_rate_hz_approx"] = round(fs, 1)
+                    vibration_analyst["dominant_peaks"] = peaks
+                    gyro_fft_success = True
+
+    if not gyro_fft_success:
+        vibration_analyst["dominant_peaks"] = "veri yok (FFT için yeterli gyro verisi bulunamadı)"
+
+    vibration_analyst["accel_vibration"] = {
+        k: v for k, v in vib_data.items()
+        if k in ["accel_x", "accel_y", "accel_z", "sample_rate_hz"]
+    }
+    vibration_analyst["gyro_vibration_rms_peak"] = {
+        k: v for k, v in vib_data.items()
+        if "gyro_" in k
+    }
+    vibration_analyst["imu_clipping"] = {
+        k: v for k, v in vib_data.items()
+        if "clips" in k
+    }
+    vibration_analyst["ilgili_parametreler"] = filter_params([
+        "IMU_GYRO_CUTOFF", "IMU_GYRO_NF", "IMU_ACCEL_CUTOFF"
+    ])
+    dataset["vibration_analyst"] = vibration_analyst
+
+    # --- 4. Sensor Fusion Expert (Dr. Sensör) Dataset ---
+    ekf_data = report.get("ekf", {})
+    sensor_fusion_expert = {"veri_durumu": "ok"}
+    sensor_fusion_expert.update(ekf_data)
+    sensor_fusion_expert["ilgili_parametreler"] = filter_params([
+        "EKF2_GPS", "EKF2_MAG", "EKF2_HGT", "EKF2_NOAID", "EKF2_REQ"
+    ])
+    sensor_fusion_expert["compass_ve_gps_mesajlari"] = filter_messages(["compass", "gps", "heading", "mag"])
+    dataset["sensor_fusion_expert"] = sensor_fusion_expert
+
+    # --- 5. Safety Officer (Kaptan Güvenlik) Dataset ---
+    battery_data = report.get("battery", {})
+    failsafe_events = report.get("failsafe_events", {})
+    safety_officer = {"veri_durumu": "ok"}
+    
+    if "error" in battery_data:
+        safety_officer["battery"] = "veri yok (battery_status bulunamadı)"
+    else:
+        safety_officer["battery"] = {
+            "min_v": battery_data.get("voltage", {}).get("min", 0.0),
+            "max_v": battery_data.get("voltage", {}).get("max", 0.0),
+            "negatif_veya_sifir_okuma_sayisi": battery_data.get("negative_voltage_count", 0),
+            "toplam_ornek": battery_data.get("voltage", {}).get("count", 0),
+            "anomalies": battery_data.get("anomalies", [])
+        }
+    
+    safety_officer["failsafe_timeline"] = failsafe_events.get("failsafe_timeline", {})
+    safety_officer["failsafe_active_count"] = failsafe_events.get("failsafe_active_count", 0)
+    safety_officer["failure_detector"] = failsafe_events.get("failure_detector", {})
+    safety_officer["preflight_ve_failsafe_mesajlari"] = filter_messages([
+        "preflight", "failsafe", "fail", "emergency", "warn"
+    ])
+    safety_officer["ilgili_parametreler"] = filter_params([
+        "COM_LOW_BAT", "BAT_CRIT", "BAT_EMERGEN", "BAT_LOW", "NAV_RCL", "NAV_DLL", "GF_ACTION", "RTL_"
+    ])
+    dataset["safety_officer"] = safety_officer
+
+    return dataset
+
+
+def format_context_block(persona_id: str, dataset: Dict[str, Any]) -> str:
+    """Turn extracted data into a markdown block to inject as a user
+    message alongside the persona's system prompt."""
+    persona_data = dataset.get(persona_id, {"veri_durumu": "veri yok"})
+    genel = dataset.get("genel", {})
+    return f"""## Bu Log İçin Çıkarılmış Veri (GERÇEK — sadece bunu kullan, dışına çıkma)
+
+### Genel Uçuş Bilgisi
+```json
+{json.dumps(genel, ensure_ascii=False, indent=2)}
+```
+
+### Senin Uzmanlık Alanına Özel Veri
+```json
+{json.dumps(persona_data, ensure_ascii=False, indent=2)}
+```
+
+Yukarıdaki veri dışında hiçbir sayısal değer (RMSE, frekans, voltaj, parametre
+değeri vb.) kullanma. Bir alan "veri yok" diyorsa o konuda kesin bulgu değil,
+en fazla "veri toplanmalı" önerisi sun.
+"""

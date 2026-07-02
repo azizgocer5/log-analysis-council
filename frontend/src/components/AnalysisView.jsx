@@ -1,11 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './AnalysisView.css';
 
 function AnalysisView({ analysisState, personas }) {
   const [activeTab, setActiveTab] = useState('stage3'); // stage1 | stage2 | stage3
   const [activePersona, setActivePersona] = useState(0);
-  const { status, stage1, stage2, stage3, userQuery, error } = analysisState;
+  const { status, stage1, stage2, stage3, userQuery, error, reportSaved } = analysisState;
+
+  // Auto-switch to latest active/completed tab
+  useEffect(() => {
+    if (stage3) {
+      setActiveTab('stage3');
+    } else if (stage2 && stage2.some(s => s.status === 'complete' || s.evaluation)) {
+      setActiveTab('stage2');
+    } else if (stage1 && stage1.some(s => s.status === 'complete' || s.response)) {
+      setActiveTab('stage1');
+    }
+  }, [stage1, stage2, stage3]);
 
   // Empty state
   if (status === 'idle') {
@@ -45,8 +56,8 @@ function AnalysisView({ analysisState, personas }) {
     );
   }
 
-  // Loading skeleton
-  if ((status === 'parsing' || status === 'analyzing') && !stage1) {
+  // Loading skeleton (only show if stage1 is not yet initialized)
+  if ((status === 'parsing' || status === 'analyzing') && (!stage1 || stage1.length === 0)) {
     return (
       <div className="analysis-loading">
         <div className="loading-card">
@@ -80,20 +91,23 @@ function AnalysisView({ analysisState, personas }) {
     );
   }
 
+  const completedStage1Count = stage1?.filter(s => s.status === 'complete' || s.response)?.length || 0;
+  const completedStage2Count = stage2?.filter(s => s.status === 'complete' || s.evaluation)?.length || 0;
+
   const tabData = [
     {
       id: 'stage1',
       label: 'Uzman Analizleri',
       icon: '🔬',
-      available: !!stage1,
-      count: stage1?.length || 0,
+      available: !!stage1 && stage1.length > 0,
+      count: stage1 && stage1.length > 0 ? `${completedStage1Count}/${stage1.length}` : null,
     },
     {
       id: 'stage2',
       label: 'Çapraz Değerlendirme',
       icon: '⚖️',
       available: !!stage2 && stage2.length > 0,
-      count: stage2?.length || 0,
+      count: stage2 && stage2.length > 0 ? `${completedStage2Count}/${stage2.length}` : null,
     },
     {
       id: 'stage3',
@@ -103,11 +117,6 @@ function AnalysisView({ analysisState, personas }) {
       count: null,
     },
   ];
-
-  // Auto-switch to latest completed tab
-  const currentData = activeTab === 'stage1' ? stage1
-    : activeTab === 'stage2' ? stage2
-    : stage3;
 
   return (
     <div className="analysis-view">
@@ -161,7 +170,7 @@ function AnalysisView({ analysisState, personas }) {
         )}
 
         {activeTab === 'stage3' && stage3 && (
-          <Stage3Content result={stage3} />
+          <Stage3Content result={stage3} reportSaved={reportSaved} />
         )}
       </div>
     </div>
@@ -181,33 +190,77 @@ function Stage1Content({
     <div className="stage-content">
       {/* Persona tabs */}
       <div className="persona-tabs">
-        {results.map((r, i) => (
-          <button
-            key={r.persona_id}
-            className={`persona-tab ${i === clampedIndex ? 'active' : ''}`}
-            onClick={() => onSelectPersona(i)}
-          >
-            <span className="pt-icon">{r.persona_icon}</span>
-            <div className="pt-info">
-              <span className="pt-name">{r.persona_name}</span>
-              <span className="pt-title">{r.persona_title}</span>
-            </div>
-          </button>
-        ))}
+        {results.map((r, i) => {
+          const isAnalyzing = r.status === 'analyzing';
+          const isComplete = r.status === 'complete' || !!r.response;
+          const isPending = !isAnalyzing && !isComplete;
+          
+          return (
+            <button
+              key={r.persona_id}
+              className={`persona-tab ${i === clampedIndex ? 'active' : ''} ${isPending ? 'pending' : ''}`}
+              onClick={() => onSelectPersona(i)}
+            >
+              <span className="pt-icon">
+                {isAnalyzing ? (
+                  <span className="persona-spinner">⏳</span>
+                ) : (
+                  r.persona_icon
+                )}
+              </span>
+              <div className="pt-info">
+                <span className="pt-name">
+                  {r.persona_name}
+                  {isAnalyzing && <span className="pulse-dot"></span>}
+                </span>
+                <span className="pt-title">
+                  {isAnalyzing ? 'Analiz yapıyor...' : isPending ? 'Sırada' : r.persona_title}
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
       {/* Content */}
       <div className="persona-content animate-fade-in" key={clampedIndex}>
-        <div className="persona-header">
-          <span className="ph-icon">{current.persona_icon}</span>
-          <div>
-            <h3>{current.persona_name}</h3>
-            <p>{current.persona_title}</p>
+        {current && (current.status === 'complete' || current.response) ? (
+          <>
+            <div className="persona-header">
+              <span className="ph-icon">{current.persona_icon}</span>
+              <div>
+                <h3>{current.persona_name}</h3>
+                <p>{current.persona_title}</p>
+              </div>
+            </div>
+            <div className="markdown-content">
+              <ReactMarkdown>{current.response}</ReactMarkdown>
+            </div>
+          </>
+        ) : (
+          <div className="persona-skeleton">
+            <div className="skeleton-icon animate-pulse">
+              {current?.status === 'analyzing' ? '🧠' : '⏳'}
+            </div>
+            <h3>
+              {current?.status === 'analyzing'
+                ? `${current.persona_name} Analiz Hazırlıyor...`
+                : `${current?.persona_name} Sırasını Bekliyor`}
+            </h3>
+            <p>
+              {current?.status === 'analyzing'
+                ? `${current.persona_title} uzmanı uçuş verilerini ve varsa odağı değerlendiriyor.`
+                : 'Diğer uzmanların analizleri bittikten sonra bu analiz başlayacaktır.'}
+            </p>
+            {current?.status === 'analyzing' && (
+              <div className="skeleton-lines">
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line"></div>
+              </div>
+            )}
           </div>
-        </div>
-        <div className="markdown-content">
-          <ReactMarkdown>{current.response}</ReactMarkdown>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -225,39 +278,95 @@ function Stage2Content({
   return (
     <div className="stage-content">
       <div className="persona-tabs">
-        {results.map((r, i) => (
-          <button
-            key={r.persona_id}
-            className={`persona-tab ${i === clampedIndex ? 'active' : ''}`}
-            onClick={() => onSelectPersona(i)}
-          >
-            <span className="pt-icon">{r.persona_icon}</span>
-            <div className="pt-info">
-              <span className="pt-name">{r.persona_name}</span>
-              <span className="pt-title">Değerlendirmesi</span>
-            </div>
-          </button>
-        ))}
+        {results.map((r, i) => {
+          const isAnalyzing = r.status === 'analyzing';
+          const isComplete = r.status === 'complete' || !!r.evaluation;
+          const isPending = !isAnalyzing && !isComplete;
+          
+          return (
+            <button
+              key={r.persona_id}
+              className={`persona-tab ${i === clampedIndex ? 'active' : ''} ${isPending ? 'pending' : ''}`}
+              onClick={() => onSelectPersona(i)}
+            >
+              <span className="pt-icon">
+                {isAnalyzing ? (
+                  <span className="persona-spinner">⏳</span>
+                ) : (
+                  r.persona_icon
+                )}
+              </span>
+              <div className="pt-info">
+                <span className="pt-name">
+                  {r.persona_name}
+                  {isAnalyzing && <span className="pulse-dot"></span>}
+                </span>
+                <span className="pt-title">
+                  {isAnalyzing ? 'Değerlendiriyor...' : isPending ? 'Sırada' : 'Değerlendirmesi'}
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
       <div className="persona-content animate-fade-in" key={clampedIndex}>
-        <div className="persona-header">
-          <span className="ph-icon">{current.persona_icon}</span>
-          <div>
-            <h3>{current.persona_name} — Çapraz Değerlendirme</h3>
-            <p>{current.persona_title}</p>
+        {current && (current.status === 'complete' || current.evaluation) ? (
+          <>
+            <div className="persona-header">
+              <span className="ph-icon">{current.persona_icon}</span>
+              <div>
+                <h3>{current.persona_name} — Çapraz Değerlendirme</h3>
+                <p>{current.persona_title}</p>
+              </div>
+            </div>
+            <div className="markdown-content">
+              <ReactMarkdown>{current.evaluation}</ReactMarkdown>
+            </div>
+          </>
+        ) : (
+          <div className="persona-skeleton">
+            <div className="skeleton-icon animate-pulse">
+              {current?.status === 'analyzing' ? '⚖️' : '⏳'}
+            </div>
+            <h3>
+              {current?.status === 'analyzing'
+                ? `${current.persona_name} Çapraz Değerlendirme Yapıyor...`
+                : `${current?.persona_name} Sırasını Bekliyor`}
+            </h3>
+            <p>
+              {current?.status === 'analyzing'
+                ? 'Diğer uzmanların analizlerini okuyor ve kendi uzmanlık alanından yorumlar hazırlıyor.'
+                : 'Diğer uzmanlar değerlendirme yaptıktan sonra bu değerlendirme başlayacaktır.'}
+            </p>
+            {current?.status === 'analyzing' && (
+              <div className="skeleton-lines">
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line"></div>
+              </div>
+            )}
           </div>
-        </div>
-        <div className="markdown-content">
-          <ReactMarkdown>{current.evaluation}</ReactMarkdown>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
 
-function Stage3Content({ result }) {
+function Stage3Content({ result, reportSaved }) {
+  const handleDownload = () => {
+    if (!reportSaved || !reportSaved.content) return;
+    const blob = new Blob([reportSaved.content], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', reportSaved.filename || 'council_report.md');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="stage3-content animate-slide-up">
       <div className="chairman-header">
@@ -268,6 +377,17 @@ function Stage3Content({ result }) {
             <p>{result.persona_title || 'Council Nihai Raporu'}</p>
           </div>
         </div>
+
+        {reportSaved && (
+          <div className="report-actions">
+            <span className="report-save-path" title={`Sunucu kayıt yolu: ${reportSaved.path}`}>
+              💾 {reportSaved.filename}
+            </span>
+            <button className="download-btn" onClick={handleDownload} title="Raporu Markdown (.md) olarak bilgisayarına indir">
+              📥 İndir (.md)
+            </button>
+          </div>
+        )}
       </div>
       <div className="chairman-body markdown-content">
         <ReactMarkdown>{result.response}</ReactMarkdown>

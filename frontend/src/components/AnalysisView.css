@@ -341,7 +341,12 @@
 }
 
 .chairman-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 24px;
+  flex-wrap: wrap;
 }
 
 .chairman-badge {
@@ -352,6 +357,53 @@
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: var(--radius-lg);
+  flex: 1;
+  min-width: 280px;
+}
+
+.report-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+}
+
+.report-save-path {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+}
+
+.download-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.download-btn:hover {
+  background: var(--accent-sky, #38bdf8);
+  transform: translateY(-1px);
+}
+
+.download-btn:active {
+  transform: translateY(0);
 }
 
 .cb-icon {
@@ -373,6 +425,103 @@
   margin-top: 2px;
 }
 
+
 .chairman-body {
   padding: 0;
+}
+
+/* Persona spin and pending states */
+.persona-tab.pending {
+  opacity: 0.5;
+}
+
+.persona-tab.pending:hover {
+  opacity: 0.8;
+}
+
+.persona-spinner {
+  display: inline-block;
+  animation: spin 2s linear infinite;
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background-color: var(--accent-emerald, #10b981);
+  border-radius: 50%;
+  margin-left: 6px;
+  animation: pulse 1s alternate infinite;
+}
+
+/* Skeleton Loading styles */
+.persona-skeleton {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 350px;
+  padding: 40px;
+  text-align: center;
+}
+
+.skeleton-icon {
+  font-size: 54px;
+  margin-bottom: 24px;
+}
+
+.persona-skeleton h3 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.persona-skeleton p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 440px;
+  margin-bottom: 28px;
+  line-height: 1.6;
+}
+
+.skeleton-lines {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-line {
+  height: 10px;
+  background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--border-color) 50%, var(--bg-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: loading-shimmer 1.5s infinite;
+  border-radius: 5px;
+}
+
+.skeleton-line:nth-child(2) {
+  width: 80%;
+  margin: 0 auto;
+}
+
+.skeleton-line:nth-child(3) {
+  width: 55%;
+  margin: 0 auto;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes loading-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }

@@ -188,7 +188,7 @@ async def analyze_stream(request: AnalyzeRequest):
 
                 # Check cache
                 cached = get_cached(log_entry["path"])
-                if cached:
+                if cached and "persona_dataset" in cached:
                     reports.append(cached)
                 else:
                     try:
@@ -196,16 +196,22 @@ async def analyze_stream(request: AnalyzeRequest):
                         set_cached(log_entry["path"], report)
                         reports.append(report)
                     except Exception as e:
-                        yield _sse("parsing_error", {
-                            "filename": log_entry["filename"],
-                            "error": str(e),
-                        })
+                        if cached:
+                            reports.append(cached) # fallback
+                        else:
+                            yield _sse("parsing_error", {
+                                "filename": log_entry["filename"],
+                                "error": str(e),
+                            })
 
             yield _sse("parsing_complete", {"parsed": len(reports)})
 
             if not reports:
                 yield _sse("error", {"message": "No logs could be parsed"})
                 return
+
+            # Extract persona dataset if single log is analyzed
+            persona_dataset = reports[0].get("persona_dataset") if len(reports) == 1 else None
 
             # Generate text report for LLM
             if len(reports) == 1:
@@ -218,19 +224,73 @@ async def analyze_stream(request: AnalyzeRequest):
                 for r in reports[:3]:  # Limit to 3 detailed reports to fit context
                     text_report += "\n" + generate_text_report(r)
 
+            # Setup queue and progress callback
+            queue = asyncio.Queue()
+            async def on_progress(event_type: str, data: Any):
+                await queue.put((event_type, data))
+
             # Phase 2: Stage 1 — Expert analyses
             yield _sse("stage1_start", {})
-            stage1 = await stage1_expert_analyses(text_report, request.user_query, request.model)
+            stage1_task = asyncio.create_task(
+                stage1_expert_analyses(
+                    text_report, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                )
+            )
+
+            # Yield events from the queue while the task is executing
+            while not stage1_task.done() or not queue.empty():
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield _sse(event_type, data)
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            stage1 = await stage1_task
             yield _sse("stage1_complete", {"data": stage1})
 
             # Phase 3: Stage 2 — Cross-evaluation
             yield _sse("stage2_start", {})
-            stage2 = await stage2_cross_evaluation(text_report, stage1, request.user_query, request.model)
+            stage2_task = asyncio.create_task(
+                stage2_cross_evaluation(
+                    text_report, stage1, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                )
+            )
+
+            # Yield events from the queue while the task is executing
+            while not stage2_task.done() or not queue.empty():
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield _sse(event_type, data)
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            stage2 = await stage2_task
             yield _sse("stage2_complete", {"data": stage2})
 
             # Phase 4: Stage 3 — Chairman synthesis
             yield _sse("stage3_start", {})
-            stage3 = await stage3_chairman_synthesis(text_report, stage1, stage2, request.user_query, request.model)
+            stage3 = await stage3_chairman_synthesis(
+                text_report, stage1, stage2, request.user_query, request.model, persona_dataset=persona_dataset
+            )
+
+            # Automatically save final report as markdown (.md)
+            try:
+                import os
+                log_filenames = [l["filename"] for l in selected_logs]
+                report_path = storage.save_report_as_markdown(
+                    log_filenames, request.user_query, stage1, stage2, stage3
+                )
+                yield _sse("report_saved", {
+                    "path": report_path,
+                    "filename": os.path.basename(report_path),
+                    "content": open(report_path, "r", encoding="utf-8").read()
+                })
+            except Exception as e:
+                print(f"Error saving report as markdown: {e}")
+                traceback.print_exc()
+
             yield _sse("stage3_complete", {"data": stage3})
 
             # Done
@@ -275,7 +335,7 @@ async def ask_question_stream(request: AskQuestionRequest):
                             "filename": log_entry["filename"],
                         })
                         cached = get_cached(log_entry["path"])
-                        if cached:
+                        if cached and "persona_dataset" in cached:
                             reports.append(cached)
                         else:
                             try:
@@ -283,7 +343,8 @@ async def ask_question_stream(request: AskQuestionRequest):
                                 set_cached(log_entry["path"], report)
                                 reports.append(report)
                             except Exception:
-                                pass
+                                if cached:
+                                    reports.append(cached)
 
                     yield _sse("parsing_complete", {"parsed": len(reports)})
 
@@ -293,12 +354,56 @@ async def ask_question_stream(request: AskQuestionRequest):
                         else:
                             text_report = generate_multi_log_comparison(reports)
 
+            # Extract persona dataset if single log is analyzed
+            persona_dataset = reports[0].get("persona_dataset") if (request.log_ids and reports) else None
+
+            # Setup queue and progress callback
+            queue = asyncio.Queue()
+            async def on_progress(event_type: str, data: Any):
+                await queue.put((event_type, data))
+
             # Stage 1 + Stage 3 (skip Stage 2 for speed on questions)
             yield _sse("stage1_start", {})
-            result = await ask_council_question(request.question, text_report, request.model)
+            task = asyncio.create_task(
+                ask_council_question(
+                    request.question, text_report, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                )
+            )
+
+            # Yield events from the queue while the task is executing
+            while not task.done() or not queue.empty():
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield _sse(event_type, data)
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            result = await task
             yield _sse("stage1_complete", {"data": result["stage1"]})
 
             yield _sse("stage3_start", {})
+
+            # Automatically save final report as markdown (.md)
+            try:
+                import os
+                log_filenames = []
+                if request.log_ids:
+                    all_logs = discover_logs(LOG_DIR)
+                    selected_logs_local = [l for l in all_logs if l["id"] in request.log_ids]
+                    log_filenames = [l["filename"] for l in selected_logs_local]
+                report_path = storage.save_report_as_markdown(
+                    log_filenames, request.question, result["stage1"], [], result["stage3"]
+                )
+                yield _sse("report_saved", {
+                    "path": report_path,
+                    "filename": os.path.basename(report_path),
+                    "content": open(report_path, "r", encoding="utf-8").read()
+                })
+            except Exception as e:
+                print(f"Error saving report as markdown: {e}")
+                traceback.print_exc()
+
             yield _sse("stage3_complete", {"data": result["stage3"]})
 
             yield _sse("complete", {})
@@ -382,12 +487,16 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                             "filename": log_entry["filename"],
                         })
                         cached = get_cached(log_entry["path"])
-                        if cached:
+                        if cached and "persona_dataset" in cached:
                             reports.append(cached)
                         else:
-                            report = parse_single_log(log_entry["path"])
-                            set_cached(log_entry["path"], report)
-                            reports.append(report)
+                            try:
+                                report = parse_single_log(log_entry["path"])
+                                set_cached(log_entry["path"], report)
+                                reports.append(report)
+                            except Exception:
+                                if cached:
+                                    reports.append(cached)
                     yield _sse("parsing_complete", {"parsed": len(reports)})
                     if reports:
                         text_report = (
@@ -395,23 +504,79 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                             else generate_multi_log_comparison(reports)
                         )
 
+            # Extract persona dataset if single log is analyzed
+            persona_dataset = reports[0].get("persona_dataset") if (request.log_ids and reports) else None
+
+            # Setup queue and progress callback
+            queue = asyncio.Queue()
+            async def on_progress(event_type: str, data: Any):
+                await queue.put((event_type, data))
+
             # Run analysis
             yield _sse("stage1_start", {})
-            stage1 = await stage1_expert_analyses(
-                text_report or "Log verisi yüklenmedi.", request.content, request.model
+            stage1_task = asyncio.create_task(
+                stage1_expert_analyses(
+                    text_report or "Log verisi yüklenmedi.", request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                )
             )
+
+            # Yield events from the queue while the task is executing
+            while not stage1_task.done() or not queue.empty():
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield _sse(event_type, data)
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            stage1 = await stage1_task
             yield _sse("stage1_complete", {"data": stage1})
 
+            # Run cross-evaluation
             yield _sse("stage2_start", {})
-            stage2 = await stage2_cross_evaluation(
-                text_report or "Log verisi yüklenmedi.", stage1, request.content, request.model
+            stage2_task = asyncio.create_task(
+                stage2_cross_evaluation(
+                    text_report or "Log verisi yüklenmedi.", stage1, request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                )
             )
+
+            # Yield events from the queue while the task is executing
+            while not stage2_task.done() or not queue.empty():
+                try:
+                    event_type, data = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    yield _sse(event_type, data)
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    continue
+
+            stage2 = await stage2_task
             yield _sse("stage2_complete", {"data": stage2})
 
             yield _sse("stage3_start", {})
             stage3 = await stage3_chairman_synthesis(
-                text_report or "Log verisi yüklenmedi.", stage1, stage2, request.content, request.model
+                text_report or "Log verisi yüklenmedi.", stage1, stage2, request.content, request.model, persona_dataset=persona_dataset
             )
+
+            # Automatically save final report as markdown (.md)
+            try:
+                import os
+                log_filenames = []
+                if request.log_ids:
+                    all_logs = discover_logs(LOG_DIR)
+                    selected_logs_local = [l for l in all_logs if l["id"] in request.log_ids]
+                    log_filenames = [l["filename"] for l in selected_logs_local]
+                report_path = storage.save_report_as_markdown(
+                    log_filenames, request.content, stage1, stage2, stage3
+                )
+                yield _sse("report_saved", {
+                    "path": report_path,
+                    "filename": os.path.basename(report_path),
+                    "content": open(report_path, "r", encoding="utf-8").read()
+                })
+            except Exception as e:
+                print(f"Error saving report as markdown: {e}")
+                traceback.print_exc()
+
             yield _sse("stage3_complete", {"data": stage3})
 
             # Save to conversation

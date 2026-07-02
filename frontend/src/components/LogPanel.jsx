@@ -173,6 +173,20 @@ function LogPanel({
           >
             ⚡ Gemini (Flash)
           </button>
+          <button
+            className={`mode-btn ${selectedModel === 'claude-sonnet' ? 'active' : ''}`}
+            onClick={() => setSelectedModel('claude-sonnet')}
+            disabled={isAnalyzing}
+          >
+            🟣 Claude (Sonnet)
+          </button>
+          <button
+            className={`mode-btn ${selectedModel === 'claude-opus' ? 'active' : ''}`}
+            onClick={() => setSelectedModel('claude-opus')}
+            disabled={isAnalyzing}
+          >
+            👑 Claude (Opus)
+          </button>
         </div>
 
         {/* Question input */}
