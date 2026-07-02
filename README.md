@@ -72,9 +72,9 @@ GEMINI_API_KEY=AIzaSy...
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Log dosyalarınızın okunacağı klasör yolunu da `.env` içinde belirtebilirsiniz (varsayılan olarak `/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log` kullanılır):
+Log dosyalarınızın okunacağı klasör yolunu da `.env` içinde belirtebilirsiniz (varsayılan olarak `../../data/log` kullanılır):
 ```env
-LOG_DIR=/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log
+LOG_DIR=../../data/log
 ```
 
 ### 4. Uygulamayı Başlatma

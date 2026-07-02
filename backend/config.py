@@ -22,5 +22,5 @@ FALLBACK_MODELS = [
 
 # Data directories
 DATA_DIR = "data/conversations"
-LOG_DIR = os.getenv("LOG_DIR", "/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log")
+LOG_DIR = os.getenv("LOG_DIR", "../../data/log")
 CACHE_DIR = "data/log_cache"
