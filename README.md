@@ -1,24 +1,54 @@
-# LLM Council
+# UAV Log Analysis Council (İHA Log Analiz Konseyi)
 
-![llmcouncil](header.jpg)
+[![VTOL Log Analysis](header.jpg)](header.jpg)
 
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+UAV Log Analysis Council; gelişim aşamasındaki VTOL (Dikey Kalkış ve İniş) ve multikopter İHA uçuş loglarını (`.ulg` formatında) parse eden, gelişmiş istatistiksel analizler (FFT titreşim analizi, EKF innovation takibi, PID tracking RMSE) gerçekleştiren ve uzman bir LLM konseyi (5 uzman persona ve 1 baş mühendis sentezi) aracılığıyla iyileştirme reçeteleri ve PX4 parametre değişiklik tabloları sunan gelişmiş bir yerel web uygulamasıdır.
 
-In a bit more detail, here is what happens when you submit a query:
+Bu proje, orijinal [karpathy/llm-council](https://github.com/karpathy/llm-council) reposundan çatallanarak (fork) tamamen havacılık ve İHA telemetri analizine odaklanacak şekilde özelleştirilmiştir.
 
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected. The individual responses are shown in a "tab view", so that the user can inspect them all one by one.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs. Under the hood, the LLM identities are anonymized so that the LLM can't play favorites when judging their outputs. The LLM is asked to rank them in accuracy and insight.
-3. **Stage 3: Final response**. The designated Chairman of the LLM Council takes all of the model's responses and compiles them into a single final answer that is presented to the user.
+---
 
-## Vibe Code Alert
+## 🛠️ Nasıl Çalışır? (3 Aşamalı Konsey Akışı)
 
-This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
+Kullanıcı bir veya birden fazla log seçip analizi başlattığında şu adımlar sırasıyla gerçekleştirilir:
 
-## Setup
+1. **Log Ayrıştırma ve İstatistik Üretimi:** Seçilen `.ulg` dosyaları arka planda hızlıca parse edilir. Ham IMU verileri üzerinden FFT analizi yapılarak titreşim pikleri bulunur, EKF innovation ratio'ları hesaplanır, Roll/Pitch/Yaw RMSE setpoint takip hataları çıkarılır ve pil anomalileri saptanır.
+2. **Aşama 1: Uzman Görüşleri (First Opinions):** 5 farklı uzman persona (Aerodinamik, Vibrasyon, EKF, Güvenlik, Test Pilotu), kendi uzmanlık alanlarına göre log verilerini detaylıca inceler ve bağımsız reçetelerini yazar.
+3. **Aşama 2: Çapraz Değerlendirme (Cross-Evaluation):** Uzmanlar, birbirlerinin reçetelerini ve parametre değişiklik önerilerini güvenlik ve uçuş dinamiği açısından eleştirir (örn. Kaptan Güvenlik, Aerodinamik hocanın önerdiği agresif PID kazançlarını sorgular).
+4. **Aşama 3: Nihai Sentez Raporu (Chairman Synthesis):** Konsey başkanı **Baş Mühendis**, tüm uzman görüşlerini ve eleştirilerini sentezleyerek çelişkileri çözer. Sonuçta önceliklendirilmiş nihai bir reçete listesi, **PX4 Parametre Değişiklik Tablosu** ve bir sonraki uçuş için **Test Uçuşu Planı** çıkarır.
 
-### 1. Install Dependencies
+---
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+## 🔬 Uzman Personalar ve Görevleri
+
+*   **🎓 Prof. Aerodinamik (PID Uzmanı):** Roll, Pitch ve Yaw RMSE değerlerini ve setpoint takip kalitesini inceler. Açısal hız takip hatalarına göre PID katsayılarını optimize eder.
+*   **🔧 Saha Mühendisi Kemal (Mekanik & Titreşim):** Ham IMU verilerinden FFT analizi yapar, motor/pervane kaynaklı rezonansları bulur ve Notch Filtre (`IMU_GYRO_NF_FREQ`) frekansları önerir.
+*   **📡 Dr. Sensör (EKF & Sensör Füzyonu):** GPS, Pusula ve Barometre innovation test oranlarını inceleyerek manyetik girişimleri, sensör gürültülerini ve bias kaymalarını tespit eder.
+*   **🛡️ Kaptan Güvenlik (Emniyet & Failsafe):** Logdaki hata mesajlarını, pil kritik voltaj alarmlarını ve failsafe mod geçişlerini analiz ederek riskleri raporlar.
+*   **✈️ Test Pilotu Ece (Uçuş Performansı):** Hover kalitesini ve stabiliteyi test pilotu gözüyle değerlendirerek bir sonraki test uçuşu için adım adım pratik bir test planı sunar.
+
+---
+
+## 🌟 Öne Çıkan Özellikler
+
+*   **Çoklu Log Karşılaştırma:** Birden fazla log seçildiğinde sistem uçuşları yan yana karşılaştırır. PID parametrelerindeki değişimi ve RMSE iyileşmelerini otomatik olarak tablo halinde sunar.
+*   **Canlı İlerleme Takibi (Progress Bar):** Log ayrıştırmadan nihai rapor sentezine kadar tüm adımları ve LLM çağrılarını görsel olarak takip edebilirsiniz.
+*   **Mod Değiştirici:**
+    *   **Tam Analiz:** Logların derinlemesine 3 aşamalı konsey incelemesini yapar.
+    *   **Soru Sor:** Seçilen loglar bağlamında konseye serbest sorular sormanızı sağlar (örn: *"12. dakikadaki irtifa kaybının sebebi ne olabilir?"*).
+*   **Yüksek Performanslı Cache:** Loglar bir kez parse edildikten sonra `data/log_cache` dizininde saklanır. Böylece aynı logu tekrar analiz ederken parsing aşaması anında tamamlanır.
+*   **İptal Desteği (Abort Controller):** Uzman analizlerini veya LLM sorgularını istediğiniz an güvenle durdurabilirsiniz.
+
+---
+
+## 🔌 Kurulum ve Çalıştırma
+
+### 1. Gereksinimler
+*   Python 3.10+
+*   Node.js (v18+)
+*   [uv](https://docs.astral.sh/uv/) (Hızlı Python paket yönetimi için önerilir)
+
+### 2. Bağımlılıkların Yüklenmesi
 
 **Backend:**
 ```bash
@@ -32,56 +62,47 @@ npm install
 cd ..
 ```
 
-### 2. Configure API Key
+### 3. API Anahtarlarının Yapılandırılması
 
-Create a `.env` file in the project root:
+Proje kök dizininde bir `.env` dosyası oluşturun ve API anahtarınızı tanımlayın (Varsayılan olarak Gemini API kullanılır, alternatif olarak OpenRouter API kullanılabilir):
 
-```bash
+```env
+GEMINI_API_KEY=AIzaSy...
+# VEYA
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
-
-### 3. Configure Models (Optional)
-
-Edit `backend/config.py` to customize the council:
-
-```python
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-]
-
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+Log dosyalarınızın okunacağı klasör yolunu da `.env` içinde belirtebilirsiniz (varsayılan olarak `/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log` kullanılır):
+```env
+LOG_DIR=/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log
 ```
 
-## Running the Application
+### 4. Uygulamayı Başlatma
 
-**Option 1: Use the start script**
+**Seçenek 1: Otomatik Başlatma Betiği**
 ```bash
 ./start.sh
 ```
 
-**Option 2: Run manually**
+**Seçenek 2: Manuel Başlatma**
 
-Terminal 1 (Backend):
-```bash
-uv run python -m backend.main
-```
+1. Terminalde Backend'i ayağa kaldırın:
+   ```bash
+   uv run python -m backend.main
+   ```
 
-Terminal 2 (Frontend):
-```bash
-cd frontend
-npm run dev
-```
+2. Terminalde Frontend'i başlatın:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
 
-Then open http://localhost:5173 in your browser.
+Ardından tarayıcınızda [http://localhost:5173](http://localhost:5173) adresine giderek arayüze erişebilirsiniz.
 
-## Tech Stack
+---
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
-- **Package Management:** uv for Python, npm for JavaScript
+## 💻 Kullanılan Teknolojiler
+
+*   **Backend:** FastAPI (Python), `pyulog` (PX4 ULog parsing), `numpy` & `pandas` (Veri analizi ve FFT), Google Gemini API / OpenRouter (Sentez ve Konsey modelleri).
+*   **Frontend:** React + Vite, CSS Custom Properties (Koyu slate / mavi kontrol odası teması), Markdown parser (`react-markdown`).
+*   **Paket Yönetimi:** Python için `uv`, JavaScript için `npm`.

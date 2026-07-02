@@ -1,26 +1,26 @@
-"""Configuration for the LLM Council."""
+"""Configuration for the UAV Log Analysis LLM Council."""
 
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# OpenRouter API key
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# API key (Gemini API)
+OPENROUTER_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 
-# Council members - list of OpenRouter model identifiers
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
+# Stable models with high daily limits (1500 requests/day free tier)
+COUNCIL_MODEL = "gemini-flash-latest"
+CHAIRMAN_MODEL = "gemini-flash-latest"
+
+# Standard Gemini API completions endpoint
+OPENROUTER_API_URL = "https://generativelanguage.googleapis.com/v1beta/chat/completions"
+
+# Fallback models in case of transient errors
+FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
 ]
 
-# Chairman model - synthesizes final response
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
-
-# OpenRouter API endpoint
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Data directory for conversation storage
+# Data directories
 DATA_DIR = "data/conversations"
+LOG_DIR = os.getenv("LOG_DIR", "/home/batuhanfurkan5/Desktop/llm-counsil/vtol/log")
+CACHE_DIR = "data/log_cache"

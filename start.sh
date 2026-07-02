@@ -16,7 +16,12 @@ sleep 2
 # Start frontend
 echo "Starting frontend on http://localhost:5173..."
 cd frontend
-npm run dev &
+NODE_MAJOR_VERSION=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)
+if [[ "$NODE_MAJOR_VERSION" -ge 20 ]]; then
+	npm run dev &
+else
+	npx -y node@20 node_modules/vite/bin/vite.js &
+fi
 FRONTEND_PID=$!
 
 echo ""

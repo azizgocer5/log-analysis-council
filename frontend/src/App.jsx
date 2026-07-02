@@ -1,199 +1,353 @@
 import { useState, useEffect } from 'react';
-import Sidebar from './components/Sidebar';
-import ChatInterface from './components/ChatInterface';
+import LogPanel from './components/LogPanel';
+import AnalysisView from './components/AnalysisView';
+import ProgressBar from './components/ProgressBar';
 import { api } from './api';
 import './App.css';
 
 function App() {
-  const [conversations, setConversations] = useState([]);
-  const [currentConversationId, setCurrentConversationId] = useState(null);
-  const [currentConversation, setCurrentConversation] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [sessions, setSessions] = useState({});
+  const [selectedLogIds, setSelectedLogIds] = useState([]);
+  const [personas, setPersonas] = useState(null);
 
-  // Load conversations on mount
+  const [abortController, setAbortController] = useState(null);
+  const [selectedModel, setSelectedModel] = useState('qwen3:8b'); // Default first choice Ollama
+
+  // Analysis state
+  const [analysisState, setAnalysisState] = useState({
+    status: 'idle', // idle | parsing | analyzing | complete | error
+    parsingProgress: null,
+    stage1: null,
+    stage2: null,
+    stage3: null,
+    currentStage: null,
+    error: null,
+    userQuery: null,
+  });
+
+  // Load initial data
   useEffect(() => {
-    loadConversations();
+    loadLogs();
+    loadPersonas();
   }, []);
 
-  // Load conversation details when selected
-  useEffect(() => {
-    if (currentConversationId) {
-      loadConversation(currentConversationId);
-    }
-  }, [currentConversationId]);
-
-  const loadConversations = async () => {
+  const loadLogs = async () => {
     try {
-      const convs = await api.listConversations();
-      setConversations(convs);
+      const data = await api.listLogs();
+      setLogs(data.logs || []);
+      setSessions(data.sessions || {});
     } catch (error) {
-      console.error('Failed to load conversations:', error);
+      console.error('Failed to load logs:', error);
     }
   };
 
-  const loadConversation = async (id) => {
+  const loadPersonas = async () => {
     try {
-      const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
+      const data = await api.getPersonas();
+      setPersonas(data);
     } catch (error) {
-      console.error('Failed to load conversation:', error);
+      console.error('Failed to load personas:', error);
     }
   };
 
-  const handleNewConversation = async () => {
-    try {
-      const newConv = await api.createConversation();
-      setConversations([
-        { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
-        ...conversations,
-      ]);
-      setCurrentConversationId(newConv.id);
-    } catch (error) {
-      console.error('Failed to create conversation:', error);
+  const handleToggleLog = (logId) => {
+    setSelectedLogIds((prev) =>
+      prev.includes(logId)
+        ? prev.filter((id) => id !== logId)
+        : [...prev, logId]
+    );
+  };
+
+  const handleSelectAll = (sessionLogs) => {
+    const ids = sessionLogs.map((l) => l.id);
+    const allSelected = ids.every((id) => selectedLogIds.includes(id));
+    if (allSelected) {
+      setSelectedLogIds((prev) => prev.filter((id) => !ids.includes(id)));
+    } else {
+      setSelectedLogIds((prev) => [...new Set([...prev, ...ids])]);
     }
   };
 
-  const handleSelectConversation = (id) => {
-    setCurrentConversationId(id);
-  };
-
-  const handleSendMessage = async (content) => {
-    if (!currentConversationId) return;
-
-    setIsLoading(true);
-    try {
-      // Optimistically add user message to UI
-      const userMessage = { role: 'user', content };
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, userMessage],
-      }));
-
-      // Create a partial assistant message that will be updated progressively
-      const assistantMessage = {
-        role: 'assistant',
+  const handleStop = () => {
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
+      setAnalysisState({
+        status: 'idle',
+        parsingProgress: null,
         stage1: null,
         stage2: null,
         stage3: null,
-        metadata: null,
-        loading: {
-          stage1: false,
-          stage2: false,
-          stage3: false,
-        },
-      };
-
-      // Add the partial assistant message
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, assistantMessage],
-      }));
-
-      // Send message with streaming
-      await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
-        switch (eventType) {
-          case 'stage1_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage1 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage1_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage1 = event.data;
-              lastMsg.loading.stage1 = false;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage2_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage2 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage2_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage2 = event.data;
-              lastMsg.metadata = event.metadata;
-              lastMsg.loading.stage2 = false;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage3_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage3 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage3_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage3 = event.data;
-              lastMsg.loading.stage3 = false;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'title_complete':
-            // Reload conversations to get updated title
-            loadConversations();
-            break;
-
-          case 'complete':
-            // Stream complete, reload conversations list
-            loadConversations();
-            setIsLoading(false);
-            break;
-
-          case 'error':
-            console.error('Stream error:', event.message);
-            setIsLoading(false);
-            break;
-
-          default:
-            console.log('Unknown event type:', eventType);
-        }
+        currentStage: null,
+        error: null,
+        userQuery: null,
       });
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      // Remove optimistic messages on error
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
-      setIsLoading(false);
     }
   };
 
+  const handleAnalyze = async (userQuery = null) => {
+    if (selectedLogIds.length === 0) return;
+
+    const controller = new AbortController();
+    setAbortController(controller);
+
+    setAnalysisState({
+      status: 'parsing',
+      parsingProgress: null,
+      stage1: null,
+      stage2: null,
+      stage3: null,
+      currentStage: null,
+      error: null,
+      userQuery,
+    });
+
+    try {
+      await api.analyzeStream(selectedLogIds, userQuery, selectedModel, controller.signal, (eventType, event) => {
+        switch (eventType) {
+          case 'parsing_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'parsing',
+              parsingProgress: { current: 0, total: event.total },
+            }));
+            break;
+
+          case 'parsing_progress':
+            setAnalysisState((prev) => ({
+              ...prev,
+              parsingProgress: {
+                current: event.current,
+                total: event.total,
+                filename: event.filename,
+                fromCache: event.from_cache,
+              },
+            }));
+            break;
+
+          case 'parsing_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'analyzing',
+              parsingProgress: { ...prev.parsingProgress, complete: true },
+            }));
+            break;
+
+          case 'stage1_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'analyzing',
+              currentStage: 1,
+            }));
+            break;
+
+          case 'stage1_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              stage1: event.data,
+              currentStage: 1,
+            }));
+            break;
+
+          case 'stage2_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              currentStage: 2,
+            }));
+            break;
+
+          case 'stage2_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              stage2: event.data,
+              currentStage: 2,
+            }));
+            break;
+
+          case 'stage3_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              currentStage: 3,
+            }));
+            break;
+
+          case 'stage3_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              stage3: event.data,
+              currentStage: 3,
+            }));
+            break;
+
+          case 'complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'complete',
+            }));
+            setAbortController(null);
+            break;
+
+          case 'error':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'error',
+              error: event.message,
+            }));
+            setAbortController(null);
+            break;
+
+          default:
+            console.log('Unknown event:', eventType, event);
+        }
+      });
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('Analysis aborted by user');
+        return;
+      }
+      setAnalysisState((prev) => ({
+        ...prev,
+        status: 'error',
+        error: error.message,
+      }));
+      setAbortController(null);
+    }
+  };
+
+  const handleAskQuestion = async (question) => {
+    const controller = new AbortController();
+    setAbortController(controller);
+
+    setAnalysisState({
+      status: 'parsing',
+      parsingProgress: null,
+      stage1: null,
+      stage2: null,
+      stage3: null,
+      currentStage: null,
+      error: null,
+      userQuery: question,
+    });
+
+    try {
+      const logIds = selectedLogIds.length > 0 ? selectedLogIds : null;
+      await api.askQuestionStream(question, logIds, selectedModel, controller.signal, (eventType, event) => {
+        switch (eventType) {
+          case 'parsing_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'parsing',
+              parsingProgress: { current: 0, total: event.total },
+            }));
+            break;
+
+          case 'parsing_progress':
+            setAnalysisState((prev) => ({
+              ...prev,
+              parsingProgress: {
+                current: event.current,
+                total: event.total,
+                filename: event.filename,
+              },
+            }));
+            break;
+
+          case 'parsing_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'analyzing',
+            }));
+            break;
+
+          case 'stage1_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'analyzing',
+              currentStage: 1,
+            }));
+            break;
+
+          case 'stage1_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              stage1: event.data,
+            }));
+            break;
+
+          case 'stage3_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              currentStage: 3,
+            }));
+            break;
+
+          case 'stage3_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              stage3: event.data,
+            }));
+            break;
+
+          case 'complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'complete',
+            }));
+            setAbortController(null);
+            break;
+
+          case 'error':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'error',
+              error: event.message,
+            }));
+            setAbortController(null);
+            break;
+        }
+      });
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('Question aborted by user');
+        return;
+      }
+      setAnalysisState((prev) => ({
+        ...prev,
+        status: 'error',
+        error: error.message,
+      }));
+      setAbortController(null);
+    }
+  };
+
+  const isAnalyzing = analysisState.status === 'parsing' || analysisState.status === 'analyzing';
+
   return (
     <div className="app">
-      <Sidebar
-        conversations={conversations}
-        currentConversationId={currentConversationId}
-        onSelectConversation={handleSelectConversation}
-        onNewConversation={handleNewConversation}
+      <LogPanel
+        logs={logs}
+        sessions={sessions}
+        selectedLogIds={selectedLogIds}
+        onToggleLog={handleToggleLog}
+        onSelectAll={handleSelectAll}
+        onAnalyze={handleAnalyze}
+        onAskQuestion={handleAskQuestion}
+        onStop={handleStop}
+        isAnalyzing={isAnalyzing}
+        personas={personas}
+        selectedModel={selectedModel}
+        setSelectedModel={setSelectedModel}
       />
-      <ChatInterface
-        conversation={currentConversation}
-        onSendMessage={handleSendMessage}
-        isLoading={isLoading}
-      />
+      <div className="app-main">
+        {analysisState.status !== 'idle' && (
+          <ProgressBar analysisState={analysisState} />
+        )}
+        <AnalysisView
+          analysisState={analysisState}
+          personas={personas}
+        />
+      </div>
     </div>
   );
 }

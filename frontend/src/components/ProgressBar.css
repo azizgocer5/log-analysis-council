@@ -1,0 +1,94 @@
+.progress-bar-wrapper {
+  padding: 12px 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  animation: slideUp 0.3s ease;
+}
+
+.progress-stages {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.progress-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--radius-xl);
+  font-size: 12px;
+  transition: var(--transition-normal);
+}
+
+.progress-stage.pending {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.progress-stage.active {
+  color: var(--accent-sky);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.progress-stage.complete {
+  color: var(--accent-emerald);
+}
+
+.progress-stage.error {
+  color: var(--accent-rose);
+}
+
+.progress-stage-icon {
+  font-size: 14px;
+}
+
+.progress-stage-label {
+  font-weight: 500;
+}
+
+/* Dot loader */
+.progress-dot-loader {
+  display: flex;
+  gap: 3px;
+  margin-left: 4px;
+}
+
+.progress-dot-loader span {
+  width: 4px;
+  height: 4px;
+  background: var(--accent-sky);
+  border-radius: 50%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.progress-dot-loader span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.progress-dot-loader span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Progress bar track */
+.progress-bar-track {
+  width: 100%;
+  height: 3px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill-animated {
+  height: 100%;
+  background: var(--gradient-brand);
+  border-radius: 2px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.progress-detail {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
