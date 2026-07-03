@@ -35,3 +35,6 @@ FALLBACK_MODELS = [
 DATA_DIR = "data/conversations"
 LOG_DIR = os.getenv("LOG_DIR") or os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/log"))
 CACHE_DIR = "data/log_cache"
+KNOWLEDGE_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "knowledge_base"))
+KNOWLEDGE_BASE_INDEX = "data/knowledge_base_index.json"
+

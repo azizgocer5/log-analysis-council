@@ -233,7 +233,7 @@ async def analyze_stream(request: AnalyzeRequest):
             yield _sse("stage1_start", {})
             stage1_task = asyncio.create_task(
                 stage1_expert_analyses(
-                    text_report, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                    text_report, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
                 )
             )
 
@@ -253,7 +253,7 @@ async def analyze_stream(request: AnalyzeRequest):
             yield _sse("stage2_start", {})
             stage2_task = asyncio.create_task(
                 stage2_cross_evaluation(
-                    text_report, stage1, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                    text_report, stage1, request.user_query, request.model, on_progress=on_progress, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
                 )
             )
 
@@ -272,7 +272,7 @@ async def analyze_stream(request: AnalyzeRequest):
             # Phase 4: Stage 3 — Chairman synthesis
             yield _sse("stage3_start", {})
             stage3 = await stage3_chairman_synthesis(
-                text_report, stage1, stage2, request.user_query, request.model, persona_dataset=persona_dataset
+                text_report, stage1, stage2, request.user_query, request.model, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
             )
 
             # Automatically save final report as markdown (.md)
@@ -516,7 +516,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             yield _sse("stage1_start", {})
             stage1_task = asyncio.create_task(
                 stage1_expert_analyses(
-                    text_report or "Log verisi yüklenmedi.", request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                    text_report or "Log verisi yüklenmedi.", request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
                 )
             )
 
@@ -536,7 +536,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             yield _sse("stage2_start", {})
             stage2_task = asyncio.create_task(
                 stage2_cross_evaluation(
-                    text_report or "Log verisi yüklenmedi.", stage1, request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset
+                    text_report or "Log verisi yüklenmedi.", stage1, request.content, request.model, on_progress=on_progress, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
                 )
             )
 
@@ -554,7 +554,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
             yield _sse("stage3_start", {})
             stage3 = await stage3_chairman_synthesis(
-                text_report or "Log verisi yüklenmedi.", stage1, stage2, request.content, request.model, persona_dataset=persona_dataset
+                text_report or "Log verisi yüklenmedi.", stage1, stage2, request.content, request.model, persona_dataset=persona_dataset, report_dict=reports[0] if reports else None
             )
 
             # Automatically save final report as markdown (.md)
