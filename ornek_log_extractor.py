@@ -224,7 +224,7 @@ def extract_ekf_health(ulog: ULog) -> Dict[str, Any]:
 
 
 def extract_safety(ulog: ULog) -> Dict[str, Any]:
-    """For: Kaptan Güvenlik (safety officer)."""
+    """For: Dr. Güvenlik — EKF, Sensör Füzyonu & Uçuş Güvenliği (sensor_safety_expert)."""
     out: Dict[str, Any] = {"veri_durumu": "ok"}
 
     batt = get_dataset(ulog, "battery_status")
@@ -252,25 +252,34 @@ def extract_safety(ulog: ULog) -> Dict[str, Any]:
 # Orchestration: one shared extraction pass -> per-persona context blocks
 # ---------------------------------------------------------------------------
 
+# Persona IDs must match backend/personas.py PERSONAS dict keys exactly.
+# Current 3-persona layout:
+#   pid_tuning_expert        -> Kontrol Mühendisi Deniz
+#   hardware_diagnostics_expert -> Saha Mühendisi Kemal
+#   sensor_safety_expert     -> Dr. Güvenlik
 EXTRACTORS = {
-    "pid_expert": extract_attitude_tracking,
-    "vibration_analyst": extract_vibration,
-    "sensor_fusion_expert": extract_ekf_health,
-    "safety_officer": extract_safety,
-    "test_pilot": extract_general_flight,
+    "pid_tuning_expert": extract_attitude_tracking,
+    "hardware_diagnostics_expert": extract_vibration,
+    "sensor_safety_expert": extract_ekf_health,
 }
 
 
 def build_flight_dataset(ulog_path: str) -> Dict[str, Any]:
     """Run every extractor once and return a dict keyed by persona id.
-    Call this ONCE per log; reuse the result for all council members."""
+    Call this ONCE per log; reuse the result for all council members.
+    
+    Keys returned:
+      - "genel": shared general flight data (all personas get this)
+      - "pid_tuning_expert": attitude/rate tracking + PID parameters
+      - "hardware_diagnostics_expert": vibration, FFT, motor balance
+      - "sensor_safety_expert": EKF innovations, GPS, compass, battery, failsafe
+    """
     ulog = load_log(ulog_path)
     dataset = {"genel": extract_general_flight(ulog)}
     for persona_id, fn in EXTRACTORS.items():
-        if persona_id == "test_pilot":
-            continue  # already computed as "genel"
         dataset[persona_id] = fn(ulog)
-    dataset["test_pilot"] = dataset["genel"]
+    # Also include merged safety data into sensor_safety_expert
+    dataset["sensor_safety_expert"].update(extract_safety(ulog))
     return dataset
 
 

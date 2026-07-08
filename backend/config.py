@@ -13,8 +13,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 # Stable models with high daily limits (1500 requests/day free tier)
-COUNCIL_MODEL = "gemini-flash-latest"
-CHAIRMAN_MODEL = "gemini-flash-latest"
+COUNCIL_MODEL = "gemini-3.5-flash"
+CHAIRMAN_MODEL = "gemini-3.5-flash"
 
 # Claude model identifiers
 CLAUDE_MODELS = {

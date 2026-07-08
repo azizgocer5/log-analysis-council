@@ -49,27 +49,18 @@ def main():
 
     db = SimpleVectorDB()
     
-    # Original files that we want to keep untouched
-    ORIGINAL_FILES = {
-        "actuator_failures.md",
-        "sensor_ekf_anomalies.md",
-        "vibration_troubleshooting.md",
-        "vtol_transition_issues.md"
-    }
+    # Clear the existing index to ensure all chunks use the new embedding model
+    print("Clearing existing vector index to ensure uniform embedding model...")
+    db.clear()
     
-    # Filter existing documents to keep only original ones
-    original_docs = [doc for doc in db.documents if doc.get("metadata", {}).get("source") in ORIGINAL_FILES]
-    print(f"Loaded {len(original_docs)} original chunks from the existing index.")
-    
-    # Reset db.documents to only original documents, and we will append new files
-    db.documents = original_docs
-    
-    # Mapping for newly fetched files to their official PX4 URLs
+    # Mapping for all files to their official URLs/references
     FILE_URLS = {
         "flight_log_analysis.md": "https://docs.px4.io/main/en/log/flight_log_analysis",
         "flight_review.md": "https://docs.px4.io/main/en/log/flight_review",
         "flight_reporting.md": "https://docs.px4.io/main/en/getting_started/flight_reporting",
-        "plotjuggler_log_analysis.md": "https://docs.px4.io/main/en/log/plotjuggler_log_analysis"
+        "plotjuggler_log_analysis.md": "https://docs.px4.io/main/en/log/plotjuggler_log_analysis",
+        "vtol_tuning_guide.md": "https://ardupilot.org/plane/docs/quadplane-vtol-tuning-process.html",
+        "similar_vtol_references.md": "https://ardupilot.org/plane/docs/quadplane-vtol-tuning.html"
     }
     
     md_files = [f for f in os.listdir(KNOWLEDGE_BASE_DIR) if f.endswith(".md")]
@@ -82,10 +73,6 @@ def main():
 
     total_new_chunks = 0
     for filename in md_files:
-        # Skip original files as they are already loaded
-        if filename in ORIGINAL_FILES:
-            continue
-            
         filepath = os.path.join(KNOWLEDGE_BASE_DIR, filename)
         print(f"\nProcessing '{filename}'...")
         

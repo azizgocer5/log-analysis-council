@@ -2,7 +2,9 @@ import os
 import json
 from typing import List, Dict, Any, Tuple, Optional
 
-SAFETY_CRITICAL_FILE = "config/safety_critical_params.json"
+# Use an absolute path so the config file is found regardless of cwd
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+SAFETY_CRITICAL_FILE = os.path.join(_MODULE_DIR, "..", "config", "safety_critical_params.json")
 DEFAULT_SAFETY_CRITICAL = ["BAT1_V_DIV", "SYS_HAS_MAG", "COM_LOW_BAT_ACT", "BAT_CRIT_THR", "BAT_EMERGEN_THR"]
 
 def load_safety_critical_params() -> List[str]:

@@ -7,6 +7,7 @@ function ProgressBar({ analysisState }) {
 
   const stages = [
     { id: 'parsing', label: 'Log Parsing', icon: '📊' },
+    { id: 'searching', label: 'Web Araştırması', icon: '🌐' },
     { id: 1, label: 'Uzman Analizleri', icon: '🔬' },
     { id: 2, label: 'Çapraz Değerlendirme', icon: '⚖️' },
     { id: 3, label: 'Başkan Sentezi', icon: '👨‍✈️' },
@@ -21,7 +22,13 @@ function ProgressBar({ analysisState }) {
       return 'complete';
     }
 
-    if (status === 'parsing') return 'pending';
+    if (stageId === 'searching') {
+      if (status === 'parsing') return 'pending';
+      if (status === 'searching') return 'active';
+      return 'complete';
+    }
+
+    if (status === 'parsing' || status === 'searching') return 'pending';
 
     if (typeof stageId === 'number') {
       if (currentStage > stageId) return 'complete';
@@ -37,9 +44,11 @@ function ProgressBar({ analysisState }) {
   if (status === 'complete') {
     progressPercent = 100;
   } else if (status === 'parsing' && parsingProgress) {
-    progressPercent = (parsingProgress.current / parsingProgress.total) * 20;
+    progressPercent = (parsingProgress.current / parsingProgress.total) * 15;
+  } else if (status === 'searching') {
+    progressPercent = 25;
   } else if (currentStage) {
-    progressPercent = 20 + (currentStage / 3) * 80;
+    progressPercent = 35 + (currentStage / 3) * 65;
   }
 
   return (
@@ -80,6 +89,12 @@ function ProgressBar({ analysisState }) {
             : `📂 ${parsingProgress.filename || '...'} işleniyor (${parsingProgress.current}/${parsingProgress.total})`
           }
           {parsingProgress.fromCache && ' (cache)'}
+        </div>
+      )}
+
+      {status === 'searching' && (
+        <div className="progress-detail">
+          🌐 Google Search Grounding ile benzer araç konfigürasyonları ve akademik literatür taranıyor...
         </div>
       )}
     </div>

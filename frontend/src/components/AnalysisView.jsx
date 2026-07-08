@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import ChatInterface from './ChatInterface';
 import './AnalysisView.css';
 
-function AnalysisView({ analysisState, personas }) {
-  const [activeTab, setActiveTab] = useState('stage3'); // stage1 | stage2 | stage3
+function AnalysisView({ analysisState, personas, conversationId, chatMessages, onSendMessage, isChatLoading }) {
+  const [activeTab, setActiveTab] = useState('stage3'); // stage1 | stage2 | stage3 | web_search
   const [activePersona, setActivePersona] = useState(0);
   const { status, stage1, stage2, stage3, userQuery, error, reportSaved } = analysisState;
 
@@ -15,8 +16,10 @@ function AnalysisView({ analysisState, personas }) {
       setActiveTab('stage2');
     } else if (stage1 && stage1.some(s => s.status === 'complete' || s.response)) {
       setActiveTab('stage1');
+    } else if (analysisState.webSearch) {
+      setActiveTab('web_search');
     }
-  }, [stage1, stage2, stage3]);
+  }, [stage1, stage2, stage3, analysisState.webSearch]);
 
   // Empty state
   if (status === 'idle') {
@@ -103,6 +106,13 @@ function AnalysisView({ analysisState, personas }) {
       count: stage1 && stage1.length > 0 ? `${completedStage1Count}/${stage1.length}` : null,
     },
     {
+      id: 'web_search',
+      label: 'Araştırma & Referanslar',
+      icon: '📚',
+      available: !!analysisState.webSearch,
+      count: null,
+    },
+    {
       id: 'stage2',
       label: 'Çapraz Değerlendirme',
       icon: '⚖️',
@@ -113,6 +123,13 @@ function AnalysisView({ analysisState, personas }) {
       id: 'stage3',
       label: 'Nihai Rapor',
       icon: '👨‍✈️',
+      available: !!stage3,
+      count: null,
+    },
+    {
+      id: 'chat',
+      label: 'Konsey ile Sohbet',
+      icon: '💬',
       available: !!stage3,
       count: null,
     },
@@ -142,7 +159,7 @@ function AnalysisView({ analysisState, personas }) {
             {tab.count !== null && tab.available && (
               <span className="tab-count">{tab.count}</span>
             )}
-            {!tab.available && status !== 'complete' && (
+            {!tab.available && status !== 'complete' && tab.id !== 'web_search' && (
               <div className="tab-loading">
                 <span></span><span></span><span></span>
               </div>
@@ -161,6 +178,10 @@ function AnalysisView({ analysisState, personas }) {
           />
         )}
 
+        {activeTab === 'web_search' && analysisState.webSearch && (
+          <WebSearchContent webSearch={analysisState.webSearch} />
+        )}
+
         {activeTab === 'stage2' && stage2 && stage2.length > 0 && (
           <Stage2Content
             results={stage2}
@@ -171,6 +192,16 @@ function AnalysisView({ analysisState, personas }) {
 
         {activeTab === 'stage3' && stage3 && (
           <Stage3Content result={stage3} reportSaved={reportSaved} />
+        )}
+
+        {activeTab === 'chat' && (
+          <div className="chat-tab-container animate-fade-in" style={{ height: 'calc(100vh - 120px)' }}>
+            <ChatInterface
+              conversation={conversationId ? { id: conversationId, messages: chatMessages } : null}
+              onSendMessage={onSendMessage}
+              isLoading={isChatLoading}
+            />
+          </div>
         )}
       </div>
     </div>
@@ -396,5 +427,75 @@ function Stage3Content({ result, reportSaved }) {
   );
 }
 
+
+function WebSearchContent({ webSearch }) {
+  const { answer_vehicles, answer_academic, sources, queries } = webSearch;
+
+  return (
+    <div className="web-search-tab-content animate-slide-up">
+      <div className="web-search-header">
+        <div className="wsh-badge">
+          <span className="wsh-icon">🌐</span>
+          <div>
+            <h3>Gemini Web Araştırması ve Literatür Referansları</h3>
+            <p>Google Search Grounding ile gerçek zamanlı taranan veriler ve teknik kaynaklar</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="web-search-body">
+        {queries && queries.length > 0 && (
+          <div className="web-queries-section">
+            <h4>🔍 Yapılan Arama Sorguları:</h4>
+            <div className="web-queries-list">
+              {queries.map((q, idx) => (
+                <span key={idx} className="web-query-tag">{q}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="web-answers-container">
+          <div className="web-answer-card">
+            <h3>🛩️ Benzer Gövdeler ve PID Konfigürasyonları</h3>
+            <div className="markdown-content">
+              <ReactMarkdown>{answer_vehicles || 'Veri bulunamadı.'}</ReactMarkdown>
+            </div>
+          </div>
+
+          <div className="web-answer-card">
+            <h3>📖 Akademik Referanslar ve Kontrol Teorisi Bulguları</h3>
+            <div className="markdown-content">
+              <ReactMarkdown>{answer_academic || 'Veri bulunamadı.'}</ReactMarkdown>
+            </div>
+          </div>
+        </div>
+
+        {sources && sources.length > 0 && (
+          <div className="web-sources-section animate-slide-up">
+            <h3>🔗 Taranan Web Kaynakları ve Makaleler</h3>
+            <div className="web-sources-list">
+              {sources.map((src, idx) => (
+                <a
+                  key={idx}
+                  href={src.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="web-source-item"
+                >
+                  <span className="wsi-icon">📄</span>
+                  <div className="wsi-info">
+                    <span className="wsi-title">{src.title || src.url}</span>
+                    <span className="wsi-url">{src.url}</span>
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default AnalysisView;

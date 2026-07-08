@@ -29,9 +29,9 @@ def get_embedding(text: str) -> Optional[List[float]]:
 
     if is_gemini_direct:
         # Query Gemini API directly
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={OPENROUTER_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key={OPENROUTER_API_KEY}"
         payload = {
-            "model": "models/gemini-embedding-001",
+            "model": "models/gemini-embedding-2",
             "content": {
                 "parts": [{"text": text}]
             }
@@ -53,7 +53,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "google/gemini-embedding-001",
+            "model": "google/gemini-embedding-2",
             "input": text
         }
         try:

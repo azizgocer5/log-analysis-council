@@ -130,13 +130,13 @@ export const api = {
     return response.json();
   },
 
-  async sendMessageStream(conversationId, content, logIds, onEvent) {
+  async sendMessageStream(conversationId, content, logIds, model, onEvent) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, log_ids: logIds }),
+        body: JSON.stringify({ content, log_ids: logIds, model: model }),
       }
     );
     if (!response.ok) throw new Error('Failed to send message');

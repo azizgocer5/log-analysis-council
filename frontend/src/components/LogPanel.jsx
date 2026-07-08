@@ -167,11 +167,18 @@ function LogPanel({
             🤖 Ollama (qwen3:8b)
           </button>
           <button
+            className={`mode-btn ${selectedModel === 'gemini-3.5-flash' ? 'active' : ''}`}
+            onClick={() => setSelectedModel('gemini-3.5-flash')}
+            disabled={isAnalyzing}
+          >
+            ⚡ Gemini 3.5 Flash
+          </button>
+          <button
             className={`mode-btn ${selectedModel === 'gemini-flash-latest' ? 'active' : ''}`}
             onClick={() => setSelectedModel('gemini-flash-latest')}
             disabled={isAnalyzing}
           >
-            ⚡ Gemini (Flash)
+            ⚡ Gemini (Flash-Old)
           </button>
           <button
             className={`mode-btn ${selectedModel === 'claude-sonnet' ? 'active' : ''}`}

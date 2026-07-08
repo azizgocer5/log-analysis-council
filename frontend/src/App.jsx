@@ -12,12 +12,18 @@ function App() {
   const [personas, setPersonas] = useState(null);
 
   const [abortController, setAbortController] = useState(null);
-  const [selectedModel, setSelectedModel] = useState('qwen3:8b'); // Default first choice Ollama
+  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash'); // Default first choice Gemini 3.5 Flash
+
+  // Conversation & Chat states
+  const [currentConversationId, setCurrentConversationId] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
 
   // Analysis state
   const [analysisState, setAnalysisState] = useState({
-    status: 'idle', // idle | parsing | analyzing | complete | error
+    status: 'idle', // idle | parsing | searching | analyzing | complete | error
     parsingProgress: null,
+    webSearch: null,
     stage1: null,
     stage2: null,
     stage3: null,
@@ -76,6 +82,7 @@ function App() {
       setAnalysisState({
         status: 'idle',
         parsingProgress: null,
+        webSearch: null,
         stage1: null,
         stage2: null,
         stage3: null,
@@ -95,6 +102,7 @@ function App() {
     setAnalysisState({
       status: 'parsing',
       parsingProgress: null,
+      webSearch: null,
       stage1: null,
       stage2: null,
       stage3: null,
@@ -103,14 +111,45 @@ function App() {
       userQuery,
     });
 
+    let convId = null;
     try {
-      await api.analyzeStream(selectedLogIds, userQuery, selectedModel, controller.signal, (eventType, event) => {
+      const conversation = await api.createConversation();
+      convId = conversation.id;
+      setCurrentConversationId(convId);
+      setChatMessages([]);
+    } catch (err) {
+      console.error('Failed to create conversation:', err);
+    }
+
+    try {
+      const initialMessage = userQuery || "Uçuş log analizi başlatıldı.";
+      await api.sendMessageStream(convId, initialMessage, selectedLogIds, selectedModel, (eventType, event) => {
         switch (eventType) {
           case 'parsing_start':
             setAnalysisState((prev) => ({
               ...prev,
               status: 'parsing',
               parsingProgress: { current: 0, total: event.total },
+            }));
+            break;
+
+          case 'web_search_start':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'searching',
+            }));
+            break;
+
+          case 'web_search_complete':
+            setAnalysisState((prev) => ({
+              ...prev,
+              status: 'analyzing',
+              webSearch: {
+                answer_vehicles: event.answer_vehicles,
+                answer_academic: event.answer_academic,
+                sources: event.sources,
+                queries: event.queries,
+              },
             }));
             break;
 
@@ -257,6 +296,11 @@ function App() {
               status: 'complete',
             }));
             setAbortController(null);
+            if (convId) {
+              api.getConversation(convId).then((data) => {
+                setChatMessages(data.messages || []);
+              }).catch(err => console.error('Failed to fetch conversation:', err));
+            }
             break;
 
           case 'error':
@@ -293,6 +337,7 @@ function App() {
     setAnalysisState({
       status: 'parsing',
       parsingProgress: null,
+      webSearch: null,
       stage1: null,
       stage2: null,
       stage3: null,
@@ -433,6 +478,27 @@ function App() {
     }
   };
 
+  const handleSendChatMessage = async (content) => {
+    if (!currentConversationId || !content.trim() || isChatLoading) return;
+
+    setIsChatLoading(true);
+    const newUserMsg = { role: 'user', content: content };
+    setChatMessages((prev) => [...prev, newUserMsg]);
+
+    try {
+      await api.sendMessageStream(currentConversationId, content, null, selectedModel, (eventType, event) => {
+        // Intermediate events are logged by api.js
+      });
+
+      const updatedConv = await api.getConversation(currentConversationId);
+      setChatMessages(updatedConv.messages || []);
+    } catch (err) {
+      console.error('Failed to send chat message:', err);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
   const isAnalyzing = analysisState.status === 'parsing' || analysisState.status === 'analyzing';
 
   return (
@@ -458,6 +524,10 @@ function App() {
         <AnalysisView
           analysisState={analysisState}
           personas={personas}
+          conversationId={currentConversationId}
+          chatMessages={chatMessages}
+          onSendMessage={handleSendChatMessage}
+          isChatLoading={isChatLoading}
         />
       </div>
     </div>

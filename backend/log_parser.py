@@ -491,6 +491,9 @@ def extract_pid_parameters(ulog: ULog) -> Dict[str, Any]:
         "NAV_",  # Navigation limits / failsafes
         "GF_",   # Geofence
         "RTL_",  # Return-to-launch rules
+        "WEIGHT_", # Weight parameters
+        "FW_WING_SPAN", # Wing span
+        "CA_", # Control allocation / airframe geometry
     ]
 
     for key, value in sorted(params.items()):
@@ -551,6 +554,39 @@ def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
+def extract_wind_data(ulog: ULog) -> Dict[str, Any]:
+    """Extract wind speed and variance from wind_estimate topic."""
+    result = {}
+    we = _get_topic_data(ulog, "wind_estimate")
+    if we is not None and "windspeed_north" in we and "windspeed_east" in we:
+        try:
+            vn = np.asarray(we["windspeed_north"])
+            ve = np.asarray(we["windspeed_east"])
+            
+            # Calculate horizontal wind speed: sqrt(north^2 + east^2)
+            wind_speeds = np.sqrt(vn**2 + ve**2)
+            if len(wind_speeds) > 0:
+                avg_speed = float(np.mean(wind_speeds))
+                max_speed = float(np.max(wind_speeds))
+                
+                # Categorize wind severity
+                if avg_speed < 3.0:
+                    status = "Hafif Rüzgar (Düşük Etki)"
+                elif avg_speed < 8.0:
+                    status = "Orta Rüzgar (Kontrolcü test edilebilir)"
+                else:
+                    status = "Kuvvetli Rüzgar (Güvenlik Riski, PID performansını düşürebilir)"
+                    
+                result = {
+                    "avg_wind_speed_m_s": round(avg_speed, 2),
+                    "max_wind_speed_m_s": round(max_speed, 2),
+                    "wind_speed_status": status
+                }
+        except Exception as e:
+            print(f"[LogParser] Wind calculation error: {e}")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main Report Generator
 # ---------------------------------------------------------------------------
@@ -573,6 +609,7 @@ def parse_single_log(filepath: str) -> Dict[str, Any]:
         "actuators": extract_actuator_data(ulog),
         "pid_parameters": extract_pid_parameters(ulog),
         "failsafe_events": extract_failsafe_events(ulog),
+        "wind": extract_wind_data(ulog),
     }
 
     # Add the persona specific datasets
@@ -601,6 +638,13 @@ def generate_text_report(report: Dict[str, Any]) -> str:
     lines.append(f"  Preflight Checks: {'PASS' if s.get('preflight_pass') else 'FAIL/UNKNOWN'}")
     lines.append(f"  Max Altitude: {s.get('max_altitude_m', '?')}m")
     lines.append(f"  Nav States: {' → '.join(s.get('nav_state_transitions', ['?']))}")
+
+    # Wind & Atmospheric conditions
+    wind = report.get("wind", {})
+    if wind:
+        lines.append("\n## WIND & ATMOSPHERIC CONDITIONS")
+        lines.append(f"  Estimated Horizontal Wind Speed: {wind.get('avg_wind_speed_m_s', 0.0)} m/s avg (max: {wind.get('max_wind_speed_m_s', 0.0)} m/s)")
+        lines.append(f"  Wind Severity Status: {wind.get('wind_speed_status', 'Bilinmeyen / Tahmin Verisi Yok')}")
 
     # Attitude tracking
     att = report.get("attitude_tracking", {})
@@ -704,6 +748,10 @@ def generate_text_report(report: Dict[str, Any]) -> str:
             lines.append("  Logged Messages:")
             for msg in fs["logged_messages"][:30]:  # Limit to 30 messages
                 lines.append(f"    [{msg['timestamp_s']}s] [{msg['level']}] {msg['message']}")
+
+    # Similar vehicles
+    similar_md = get_similar_vehicles_markdown(report)
+    lines.append("\n" + similar_md)
 
     lines.append("\n" + "=" * 70)
     return "\n".join(lines)
@@ -836,12 +884,143 @@ def discover_logs(log_dir: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Vehicle Specifications & Similarity Matching
+# ---------------------------------------------------------------------------
+
+def get_vehicle_specs(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Helper to extract vehicle specifications from parsed parameters or summary."""
+    params = report.get("pid_parameters", {})
+    summary = report.get("summary", {})
+    
+    is_vtol = summary.get("is_vtol", False)
+    vehicle_type = summary.get("vehicle_type", 0)
+    
+    weight = params.get("WEIGHT_BASE") or params.get("WEIGHT_GROSS")
+    wing_span = params.get("FW_WING_SPAN")
+    ca_airframe = params.get("CA_AIRFRAME")
+    rotor_count = params.get("CA_ROTOR_COUNT")
+    vt_type = params.get("VT_TYPE")
+    
+    # Try to guess weight if not available
+    if weight is None:
+        weight = 23.50 if is_vtol else 2.0
+        
+    return {
+        "is_vtol": is_vtol,
+        "vehicle_type": vehicle_type,
+        "weight_kg": weight,
+        "wing_span_m": wing_span,
+        "ca_airframe": ca_airframe,
+        "rotor_count": rotor_count,
+        "vt_type": vt_type,
+        "hardware": summary.get("hardware", "Unknown"),
+        "firmware": summary.get("firmware", "Unknown")
+    }
+
+
+def find_similar_vehicles(current_specs: Dict[str, Any], current_file: str) -> List[Dict[str, Any]]:
+    """Scan all logs in the local log cache directory to find runs with similar hardware and configurations."""
+    similar_runs = []
+    cache_dir = "data/log_cache"
+    if not os.path.exists(cache_dir):
+        return []
+        
+    for f in os.listdir(cache_dir):
+        if not f.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(cache_dir, f), "r", encoding="utf-8") as file:
+                data = json.load(file)
+                # Skip current log
+                filepath = data.get("filepath", "")
+                filename = data.get("summary", {}).get("file", "")
+                if filepath == current_file or filename == os.path.basename(current_file):
+                    continue
+                
+                # Extract properties
+                s = data.get("summary", {})
+                is_vtol = s.get("is_vtol", False)
+                vehicle_type = s.get("vehicle_type", 0)
+                pid = data.get("pid_parameters", {})
+                weight = pid.get("WEIGHT_BASE") or pid.get("WEIGHT_GROSS")
+                
+                # Check config similarity
+                if is_vtol == current_specs["is_vtol"] or vehicle_type == current_specs["vehicle_type"]:
+                    # Match weight class if possible
+                    curr_weight = current_specs.get("weight_kg")
+                    if curr_weight is not None and weight is not None:
+                        weight_diff = abs(curr_weight - weight) / curr_weight
+                        if weight_diff > 0.35: # weight diff limit 35%
+                            continue
+                            
+                    # Extract target properties for context
+                    att = data.get("attitude_tracking", {})
+                    vib = data.get("vibration", {})
+                    similar_runs.append({
+                        "filename": filename or os.path.basename(filepath),
+                        "weight": weight or (23.50 if is_vtol else 2.0),
+                        "rotors": pid.get("CA_ROTOR_COUNT") or (5 if is_vtol else 4),
+                        "roll_rmse": att.get("roll", {}).get("rmse_deg", "N/A"),
+                        "pitch_rmse": att.get("pitch", {}).get("rmse_deg", "N/A"),
+                        "MC_ROLLRATE_P": pid.get("MC_ROLLRATE_P", "N/A"),
+                        "MC_ROLLRATE_I": pid.get("MC_ROLLRATE_I", "N/A"),
+                        "MC_PITCHRATE_P": pid.get("MC_PITCHRATE_P", "N/A"),
+                        "MC_PITCHRATE_I": pid.get("MC_PITCHRATE_I", "N/A"),
+                        "accel_x_rms": vib.get("accel_x", {}).get("rms_m_s2", "N/A"),
+                        "accel_y_rms": vib.get("accel_y", {}).get("rms_m_s2", "N/A"),
+                        "accel_z_rms": vib.get("accel_z", {}).get("rms_m_s2", "N/A"),
+                    })
+        except Exception as e:
+            print(f"[similar_runs] Error reading cached log {f}: {e}")
+            
+    return similar_runs
+
+
+def format_similar_vehicles_context(similar_runs: List[Dict[str, Any]]) -> str:
+    """Format similar vehicle runs as a beautiful Markdown reference table."""
+    if not similar_runs:
+        return "## BENZER ARAÇLAR REFERANS VERİSİ\nSistemde daha önce analiz edilmiş benzer özellikte bir araç bulunamadı."
+        
+    lines = []
+    lines.append("## BENZER ARAÇLAR REFERANS VERİSİ (Filo Analizi)")
+    lines.append("Daha önce başarılı veya başarısız uçuş gerçekleştirmiş benzer özellikteki İHA'ların verileri:")
+    lines.append("")
+    lines.append("| Dosya | Ağırlık | Motor Sayısı | Roll RMSE | Pitch RMSE | MC_ROLLRATE_P/I | MC_PITCHRATE_P/I | Titreşim RMS (X/Y/Z) |")
+    lines.append("|-------|---------|--------------|-----------|------------|-----------------|------------------|----------------------|")
+    
+    for r in similar_runs:
+        lines.append(
+            f"| {r['filename']} | {r['weight']} kg | {r['rotors']} | {r['roll_rmse']}° | {r['pitch_rmse']}° | "
+            f"{r['MC_ROLLRATE_P']}/{r['MC_ROLLRATE_I']} | {r['MC_PITCHRATE_P']}/{r['MC_PITCHRATE_I']} | "
+            f"{r['accel_x_rms']}/{r['accel_y_rms']}/{r['accel_z_rms']} |"
+        )
+        
+    lines.append("")
+    lines.append("> [!TIP]")
+    lines.append("> Uzmanlar, yukarıdaki benzer araçların parametrelerini ve elde ettikleri RMSE takip başarımlarını referans alarak yeni parametre önerilerinde bulunmalıdır.")
+    return "\n".join(lines)
+
+
+def get_similar_vehicles_markdown(report: Dict[str, Any]) -> str:
+    """Convenience helper to get similar vehicles as markdown."""
+    specs = get_vehicle_specs(report)
+    similar_runs = find_similar_vehicles(specs, report.get("filepath", ""))
+    return format_similar_vehicles_context(similar_runs)
+
+
+# ---------------------------------------------------------------------------
 # Persona-Specific Grounding and Context Formatting
 # ---------------------------------------------------------------------------
 
 def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a persona-specific dataset for each of the 5 expert personas,
-    incorporating the grounding and context-reduction design from ornek_log_extractor.py."""
+    """Build a persona-specific dataset for each of the 3 expert personas,
+    incorporating the grounding and context-reduction design from ornek_log_extractor.py.
+    
+    Persona mapping:
+    - pid_tuning_expert: Attitude tracking, rate tracking, PID/Position/FW parameters
+    - hardware_diagnostics_expert: Vibration, FFT, motor balance, notch filter params
+    - sensor_safety_expert: EKF, GPS, compass, battery, failsafe, safety params
+    """
     dataset = {}
 
     # Helper to get parameter subsets
@@ -857,50 +1036,56 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
             if any(k.lower() in m["message"].lower() for k in keywords)
         ]
 
-    # --- 1. Test Pilot / General Flight Dataset ---
-    test_pilot = {"veri_durumu": "ok"}
+    # --- GENEL (General Flight Dataset, shared by all personas) ---
+    genel = {"veri_durumu": "ok"}
     pos_data = _get_topic_data(ulog, "vehicle_local_position")
     if pos_data is None:
-        test_pilot["altitude"] = "veri yok (vehicle_local_position bulunamadı)"
+        genel["altitude"] = "veri yok (vehicle_local_position bulunamadı)"
     else:
         z = -np.asarray(pos_data.get("z", [0]))
         t = np.asarray(pos_data.get("timestamp", [0])) / 1e6
-        test_pilot["altitude_min_m"] = round(float(np.min(z)), 2) if len(z) > 0 else 0.0
-        test_pilot["altitude_max_m"] = round(float(np.max(z)), 2) if len(z) > 0 else 0.0
-        test_pilot["duration_sec"] = round(float(t[-1] - t[0]), 1) if len(t) > 1 else 0.0
+        genel["altitude_min_m"] = round(float(np.min(z)), 2) if len(z) > 0 else 0.0
+        genel["altitude_max_m"] = round(float(np.max(z)), 2) if len(z) > 0 else 0.0
+        genel["duration_sec"] = round(float(t[-1] - t[0]), 1) if len(t) > 1 else 0.0
 
         x = np.asarray(pos_data.get("x", [0]))
         y = np.asarray(pos_data.get("y", [0]))
         if len(x) > 0 and len(y) > 0:
-            test_pilot["hover_xy_stddev_m"] = round(float(np.sqrt(np.std(x) ** 2 + np.std(y) ** 2)), 3)
+            genel["hover_xy_stddev_m"] = round(float(np.sqrt(np.std(x) ** 2 + np.std(y) ** 2)), 3)
         else:
-            test_pilot["hover_xy_stddev_m"] = 0.0
+            genel["hover_xy_stddev_m"] = 0.0
 
     status_data = _get_topic_data(ulog, "vehicle_status")
     if status_data is not None and "nav_state" in status_data:
         states, counts = np.unique(status_data["nav_state"], return_counts=True)
-        test_pilot["nav_state_gozlemleri"] = {int(s): int(c) for s, c in zip(states, counts)}
+        genel["nav_state_gozlemleri"] = {int(s): int(c) for s, c in zip(states, counts)}
 
-    # Merge actuators into test_pilot for holistic general/performance context
-    test_pilot["actuators"] = report.get("actuators", {})
-    dataset["test_pilot"] = test_pilot
-    dataset["genel"] = test_pilot
+    genel["actuators"] = report.get("actuators", {})
+    genel["wind"] = report.get("wind", {})
+    dataset["genel"] = genel
 
-    # --- 2. PID Expert (Prof. Aerodinamik) Dataset ---
+    # --- 1. PID Tuning Expert (Kontrol Mühendisi Deniz) Dataset ---
     att_tracking = report.get("attitude_tracking", {})
-    pid_expert = {"veri_durumu": "ok"}
+    pid_tuning_expert = {"veri_durumu": "ok"}
     if "error" in att_tracking:
-        pid_expert["veri_durumu"] = f"veri yok ({att_tracking['error']})"
+        pid_tuning_expert["veri_durumu"] = f"veri yok ({att_tracking['error']})"
     else:
-        pid_expert.update(att_tracking)
-    pid_expert["ilgili_parametreler"] = filter_params([
-        "MC_ROLLRATE", "MC_PITCHRATE", "MC_YAWRATE", "MC_ROLL_P", "MC_PITCH_P", "MC_YAW_P"
+        pid_tuning_expert.update(att_tracking)
+    pid_tuning_expert["ilgili_parametreler"] = filter_params([
+        "MC_ROLLRATE", "MC_PITCHRATE", "MC_YAWRATE",
+        "MC_ROLL_P", "MC_PITCH_P", "MC_YAW_P", "MC_YAW_WEIGHT",
+        "MC_AT_",  # Autotune params
+        "MPC_XY_", "MPC_Z_", "MPC_ACC_",  # Position/velocity controller
+        "FW_R_", "FW_P_", "FW_Y_",  # Fixed-wing controller
+        "VT_",  # VTOL transition parameters
     ])
-    dataset["pid_expert"] = pid_expert
+    # Include motor balance for cross-coupling context
+    pid_tuning_expert["motor_balance"] = report.get("actuators", {}).get("motor_balance", {})
+    dataset["pid_tuning_expert"] = pid_tuning_expert
 
-    # --- 3. Vibration Analyst (Saha Mühendisi Kemal) Dataset ---
+    # --- 2. Hardware Diagnostics Expert (Saha Mühendisi Kemal) Dataset ---
     vib_data = report.get("vibration", {})
-    vibration_analyst = {"veri_durumu": "ok"}
+    hardware_diagnostics_expert = {"veri_durumu": "ok"}
     
     # Run Gyro FFT just like ornek_log_extractor.py
     gyro_fft_success = False
@@ -925,49 +1110,51 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
                         {"freq_hz": round(float(freqs[mask][i]), 1), "magnitude": round(float(fft_vals[mask][i]), 2)}
                         for i in idx
                     ]
-                    vibration_analyst["sample_rate_hz_approx"] = round(fs, 1)
-                    vibration_analyst["dominant_peaks"] = peaks
+                    hardware_diagnostics_expert["sample_rate_hz_approx"] = round(fs, 1)
+                    hardware_diagnostics_expert["dominant_peaks"] = peaks
                     gyro_fft_success = True
 
     if not gyro_fft_success:
-        vibration_analyst["dominant_peaks"] = "veri yok (FFT için yeterli gyro verisi bulunamadı)"
+        hardware_diagnostics_expert["dominant_peaks"] = "veri yok (FFT için yeterli gyro verisi bulunamadı)"
 
-    vibration_analyst["accel_vibration"] = {
+    hardware_diagnostics_expert["accel_vibration"] = {
         k: v for k, v in vib_data.items()
         if k in ["accel_x", "accel_y", "accel_z", "sample_rate_hz"]
     }
-    vibration_analyst["gyro_vibration_rms_peak"] = {
+    hardware_diagnostics_expert["gyro_vibration_rms_peak"] = {
         k: v for k, v in vib_data.items()
         if "gyro_" in k
     }
-    vibration_analyst["imu_clipping"] = {
+    hardware_diagnostics_expert["imu_clipping"] = {
         k: v for k, v in vib_data.items()
         if "clips" in k
     }
-    vibration_analyst["ilgili_parametreler"] = filter_params([
-        "IMU_GYRO_CUTOFF", "IMU_GYRO_NF", "IMU_ACCEL_CUTOFF"
+    hardware_diagnostics_expert["ilgili_parametreler"] = filter_params([
+        "IMU_GYRO_CUTOFF", "IMU_GYRO_NF", "IMU_ACCEL_CUTOFF", "IMU_DGYRO_CUTOFF",
+        "CA_ROTOR",  # Motor geometry for CoG analysis
     ])
-    dataset["vibration_analyst"] = vibration_analyst
+    # Include full motor/actuator data for CoG and motor balance analysis
+    hardware_diagnostics_expert["motor_data"] = report.get("actuators", {})
+    dataset["hardware_diagnostics_expert"] = hardware_diagnostics_expert
 
-    # --- 4. Sensor Fusion Expert (Dr. Sensör) Dataset ---
+    # --- 3. Sensor & Safety Expert (Dr. Güvenlik) Dataset ---
     ekf_data = report.get("ekf", {})
-    sensor_fusion_expert = {"veri_durumu": "ok"}
-    sensor_fusion_expert.update(ekf_data)
-    sensor_fusion_expert["ilgili_parametreler"] = filter_params([
-        "EKF2_GPS", "EKF2_MAG", "EKF2_HGT", "EKF2_NOAID", "EKF2_REQ"
-    ])
-    sensor_fusion_expert["compass_ve_gps_mesajlari"] = filter_messages(["compass", "gps", "heading", "mag"])
-    dataset["sensor_fusion_expert"] = sensor_fusion_expert
-
-    # --- 5. Safety Officer (Kaptan Güvenlik) Dataset ---
     battery_data = report.get("battery", {})
     failsafe_events = report.get("failsafe_events", {})
-    safety_officer = {"veri_durumu": "ok"}
     
+    sensor_safety_expert = {"veri_durumu": "ok"}
+    # EKF data
+    sensor_safety_expert["ekf"] = ekf_data
+    sensor_safety_expert["ekf_parametreleri"] = filter_params([
+        "EKF2_GPS", "EKF2_MAG", "EKF2_HGT", "EKF2_NOAID", "EKF2_REQ", "EKF2_BARO"
+    ])
+    sensor_safety_expert["compass_ve_gps_mesajlari"] = filter_messages(["compass", "gps", "heading", "mag"])
+    
+    # Battery & Safety data
     if "error" in battery_data:
-        safety_officer["battery"] = "veri yok (battery_status bulunamadı)"
+        sensor_safety_expert["battery"] = "veri yok (battery_status bulunamadı)"
     else:
-        safety_officer["battery"] = {
+        sensor_safety_expert["battery"] = {
             "min_v": battery_data.get("voltage", {}).get("min", 0.0),
             "max_v": battery_data.get("voltage", {}).get("max", 0.0),
             "negatif_veya_sifir_okuma_sayisi": battery_data.get("negative_voltage_count", 0),
@@ -975,16 +1162,23 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
             "anomalies": battery_data.get("anomalies", [])
         }
     
-    safety_officer["failsafe_timeline"] = failsafe_events.get("failsafe_timeline", {})
-    safety_officer["failsafe_active_count"] = failsafe_events.get("failsafe_active_count", 0)
-    safety_officer["failure_detector"] = failsafe_events.get("failure_detector", {})
-    safety_officer["preflight_ve_failsafe_mesajlari"] = filter_messages([
+    sensor_safety_expert["failsafe_timeline"] = failsafe_events.get("failsafe_timeline", {})
+    sensor_safety_expert["failsafe_active_count"] = failsafe_events.get("failsafe_active_count", 0)
+    sensor_safety_expert["failure_detector"] = failsafe_events.get("failure_detector", {})
+    sensor_safety_expert["preflight_ve_failsafe_mesajlari"] = filter_messages([
         "preflight", "failsafe", "fail", "emergency", "warn"
     ])
-    safety_officer["ilgili_parametreler"] = filter_params([
-        "COM_LOW_BAT", "BAT_CRIT", "BAT_EMERGEN", "BAT_LOW", "NAV_RCL", "NAV_DLL", "GF_ACTION", "RTL_"
+    sensor_safety_expert["guvenlik_parametreleri"] = filter_params([
+        "COM_LOW_BAT", "BAT_CRIT", "BAT_EMERGEN", "BAT_LOW",
+        "NAV_RCL", "NAV_DLL", "GF_ACTION", "RTL_",
+        "COM_ARM_", "COM_PREARM",
     ])
-    dataset["safety_officer"] = safety_officer
+    dataset["sensor_safety_expert"] = sensor_safety_expert
+    
+    # Add vehicle specs & similar runs to the dataset (shared)
+    specs = get_vehicle_specs(report)
+    similar_runs = find_similar_vehicles(specs, report.get("filepath", ""))
+    dataset["similar_vehicles"] = similar_runs
 
     return dataset
 
@@ -994,19 +1188,32 @@ def format_context_block(persona_id: str, dataset: Dict[str, Any]) -> str:
     message alongside the persona's system prompt."""
     persona_data = dataset.get(persona_id, {"veri_durumu": "veri yok"})
     genel = dataset.get("genel", {})
+    similar = dataset.get("similar_vehicles", [])
+    
+    similar_text = ""
+    if similar:
+        similar_text = "\n### Benzer Araçların Özellikleri ve Parametreleri (Filo Referansı)\n"
+        for r in similar:
+            similar_text += (
+                f"- **Dosya:** {r['filename']}, **Ağırlık:** {r['weight']} kg, **Rotor:** {r['rotors']}, "
+                f"**Roll RMSE:** {r['roll_rmse']}°, **Pitch RMSE:** {r['pitch_rmse']}°\n"
+                f"  *Önemli Parametreler:* MC_ROLLRATE_P={r['MC_ROLLRATE_P']}, MC_ROLLRATE_I={r['MC_ROLLRATE_I']}, "
+                f"MC_PITCHRATE_P={r['MC_PITCHRATE_P']}, MC_PITCHRATE_I={r['MC_PITCHRATE_I']}\n"
+            )
+            
     return f"""## Bu Log İçin Çıkarılmış Veri (GERÇEK — sadece bunu kullan, dışına çıkma)
 
 ### Genel Uçuş Bilgisi
 ```json
 {json.dumps(genel, ensure_ascii=False, indent=2)}
 ```
-
+{similar_text}
 ### Senin Uzmanlık Alanına Özel Veri
 ```json
 {json.dumps(persona_data, ensure_ascii=False, indent=2)}
 ```
 
-Yukarıdaki veri dışında hiçbir sayısal değer (RMSE, frekans, voltaj, parametre
+Yukarıdaki veri ve referanslar dışında hiçbir sayısal değer (RMSE, frekans, voltaj, parametre
 değeri vb.) kullanma. Bir alan "veri yok" diyorsa o konuda kesin bulgu değil,
 en fazla "veri toplanmalı" önerisi sun.
 """

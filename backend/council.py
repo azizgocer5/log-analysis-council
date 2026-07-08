@@ -1,7 +1,7 @@
-"""3-stage UAV Log Analysis LLM Council orchestration.
+"""2-stage UAV Log Analysis LLM Council orchestration.
 
-Stage 1: Each persona analyzes the flight log from their expertise
-Stage 2: Cross-evaluation of each other's analyses
+Stage 1: Each persona (3 experts) analyzes the flight log from their expertise
+Stage 2 (Optional): Cross-evaluation of each other's analyses — currently skipped for speed
 Stage 3: Chairman synthesizes final prioritized prescription list
 """
 
@@ -12,6 +12,8 @@ import json
 from .openrouter import query_model
 from .config import COUNCIL_MODEL, CHAIRMAN_MODEL
 from .personas import PERSONAS, CHAIRMAN_PERSONA, get_persona_names
+from .academic_kb import get_academic_context
+from .vehicle_profile import build_profile_from_log, format_vehicle_context
 
 
 def clean_control_characters(s: str) -> str:
@@ -276,31 +278,29 @@ def render_recipes_to_markdown(recipes: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def render_chairman_report(recipes: List[Dict[str, Any]]) -> str:
-    """Render the final chairman synthesis report from the structured recipes list."""
+def render_chairman_report(
+    recipes: List[Dict[str, Any]], 
+    report_dict: Optional[Dict[str, Any]] = None, 
+    web_search_context: Optional[str] = None
+) -> str:
+    """Render the final chairman synthesis report from the structured recipes list,
+    enriching it with environmental weather conditions, fleet comparisons, and web search evidence.
+    Flow ordered as: Final Recipes/Tables first, then Synthesis Analyses, then Bibliography/Web Search at the end.
+    """
     if not recipes:
         return "# 👨‍✈️ COUNCIL NİHAİ RAPORU\n\nHerhangi bir reçete üretilmedi veya analiz sırasında hata oluştu."
         
     lines = []
     lines.append("# COUNCIL NİHAİ RAPORU")
     lines.append("")
-    lines.append("## GENEL DEĞERLENDİRME")
-    lines.append(f"Uçuş log analizleri ve uzman görüşlerinin sentezi sonucunda toplam **{len(recipes)}** adet somut reçete belirlenmiştir.")
-    lines.append("Bu reçeteler, drone güvenliği ve kontrol performansı önceliklendirilerek aşağıda listelenmiştir.")
+    
+    # =========================================================================
+    # BÖLÜM 1: NİHAİ REÇETELER VE PARAMETRE DEĞİŞİKLİK TABLOLARI
+    # =========================================================================
+    lines.append("## 📋 ÖNCELİKLENDİRİLMİŞ NİHAİ REÇETE LİSTESİ")
+    lines.append("Uçuş log analizleri ve uzman görüşlerinin senteziyle oluşturulan öncelikli parametre ve mekanik reçete önerileri aşağıdadır:")
     lines.append("")
     
-    # Safety Critical Section
-    safety_recipes = [r for r in recipes if r.get("safety_critical")]
-    if safety_recipes:
-        lines.append("## ⚠️ İNSAN ONAYI GEREKLİ (SAFETY CRITICAL)")
-        lines.append("Aşağıdaki reçeteler uçuş güvenliğini doğrudan etkileyebilecek niteliktedir ve uçuş öncesi **İnsan Onayı** gerektirmektedir:")
-        for sr in safety_recipes:
-            zayif_str = " [ZAYIF KANIT]" if sr.get("dogrulanamadi") else ""
-            lines.append(f"- **{sr.get('recete_id', 'N/A')}** ({sr.get('parametre', 'N/A')}): {sr.get('gerekce', 'N/A')}{zayif_str}")
-        lines.append("")
-        
-    # Prioritized details
-    lines.append("## ÖNCELİKLENDİRİLMİŞ REÇETE LİSTESİ")
     for r in recipes:
         recete_id = r.get("recete_id", "N/A")
         parametre = r.get("parametre", "N/A")
@@ -339,9 +339,19 @@ def render_chairman_report(recipes: List[Dict[str, Any]]) -> str:
             val_err = r.get("validation_error", "Log verileriyle programatik olarak doğrulanamadı.")
             lines.append(f"- > **[ZAYIF KANIT UYARISI]:** {val_err}")
         lines.append("")
-        
+
+    # Safety Critical Warnings Summary
+    safety_recipes = [r for r in recipes if r.get("safety_critical")]
+    if safety_recipes:
+        lines.append("### ⚠️ İNSAN ONAYI GEREKLİ (SAFETY CRITICAL)")
+        lines.append("Aşağıdaki reçeteler uçuş güvenliğini doğrudan etkileyebilecek niteliktedir ve uçuş öncesi **İnsan Onayı** gerektirmektedir:")
+        for sr in safety_recipes:
+            zayif_str = " [ZAYIF KANIT]" if sr.get("dogrulanamadi") else ""
+            lines.append(f"- **{sr.get('recete_id', 'N/A')}** ({sr.get('parametre', 'N/A')}): {sr.get('gerekce', 'N/A')}{zayif_str}")
+        lines.append("")
+
     # Table section
-    lines.append("## PX4 PARAMETRE DEĞİŞİKLİK TABLOSU")
+    lines.append("### PX4 PARAMETRE DEĞİŞİKLİK TABLOSU")
     lines.append("| Parametre | Mevcut | Önerilen | Gerekçe | Risk | Güven |")
     lines.append("|-----------|--------|----------|---------|------|-------|")
     for r in recipes:
@@ -361,15 +371,65 @@ def render_chairman_report(recipes: List[Dict[str, Any]]) -> str:
             
         lines.append(f"| `{parametre}` | `{mevcut_str}` | `{onerilen_str}` | {r.get('gerekce', 'N/A')[:40]}... | {safety_str} | {guven_str} |")
     lines.append("")
-    
+
     # Test Flight Plan
-    lines.append("## SONRAKİ TEST UÇUŞU PLANI")
+    lines.append("### SONRAKİ TEST UÇUŞU PLANI")
     lines.append("Önerilen parametre ve mekanik değişikliklerinin havada doğrulanması için aşağıdaki test prosedürleri uygulanmalıdır:")
     lines.append("1. **Güvenlik Kontrolü:** Safety Critical işaretli parametrelerin elle doğrulandığından emin olun.")
     lines.append("2. **Hover Testi:** İlk kalkıştan sonra 3-5 metre irtifada hover kararlılığını ve titreşimi izleyin.")
     lines.append("3. **Basamak Tepki Testi:** Roll/Pitch eksenlerinde küçük basamak (step) komutları vererek tracking başarımını ve overshoot durumunu test edin.")
     lines.append("4. **Log Analizi:** Uçuş sonrasında yeni logları RAG sistemine besleyerek iyileşmeyi doğrulayın.")
+    lines.append("")
+
+    # =========================================================================
+    # BÖLÜM 2: NİHAİ ANALİZLER VE SENTEZLER
+    # =========================================================================
+    lines.append("---")
+    lines.append("")
+    lines.append("## 🔬 NİHAİ ANALİZLER VE SENTEZLER")
+    lines.append("")
+    lines.append("### GENEL DEĞERLENDİRME")
+    lines.append(f"Uçuş log analizleri ve uzman görüşlerinin sentezi sonucunda toplam **{len(recipes)}** adet somut reçete belirlenmiştir.")
+    lines.append("Bu reçeteler, drone güvenliği ve kontrol performansı önceliklendirilerek yukarıda listelenmiştir.")
+    lines.append("")
     
+    # 🌦️ Environmental & Weather Conditions
+    if report_dict and "wind" in report_dict:
+        wind = report_dict["wind"]
+        if wind:
+            lines.append("### 🌦️ ÇEVRESEL VE METEOROLOJİK KOŞULLAR")
+            lines.append(f"- **Tahmini Rüzgar Hızı:** Ortalama `{wind.get('avg_wind_speed_m_s', 0.0)} m/s` (Maksimum Hamla: `{wind.get('max_wind_speed_m_s', 0.0)} m/s`)")
+            lines.append(f"- **Hava Şiddeti Sınıfı:** {wind.get('wind_speed_status', 'Bilinmiyor')}")
+            lines.append("- **Etki Analizi:** Rüzgarlı ve hamlalı havalar, drone'un aerodinamik sürüklenmesini artırarak kontrol döngüleri (PID) ve motor itki dağılımı (motor balance) üzerinde doğrudan bozucu etki yaratır. Reçeteler uygulanırken bu çevre koşulları mutlaka göz önünde bulundurulmalıdır.")
+            lines.append("")
+
+    # 📋 Similar Vehicles Local Fleet comparison
+    if report_dict:
+        from .log_parser import get_similar_vehicles_markdown
+        try:
+            similar_md = get_similar_vehicles_markdown(report_dict)
+            if similar_md and ("|" in similar_md or "Ağırlık" in similar_md):
+                lines.append("### 📋 FİLO REFERANS BAZINDA BENZER ARAÇ ANALİZLERİ")
+                lines.append("Veritabanımızdaki diğer uçuş loglarından, benzer ağırlık ve rotor konfigürasyonuna sahip olan araçların PID ve başarım karşılaştırması aşağıdadır:")
+                lines.append("")
+                lines.append(similar_md)
+                lines.append("")
+        except Exception as e:
+            print(f"[Council] Error generating similar vehicles md for report: {e}")
+
+    # =========================================================================
+    # BÖLÜM 3: BİBLİYOGRAFYA VE WEB ARAŞTIRMA KANITLARI (En sonda)
+    # =========================================================================
+    if web_search_context:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🌐 BİBLİYOGRAFYA VE WEB ARAŞTIRMA KANITLARI")
+        lines.append("Gemini Google Search Grounding üzerinden yapılan sorgularla elde edilen güncel literatür ve resmi otopilot dokümantasyonu referans verileri:")
+        lines.append("")
+        clean_context = web_search_context.replace("### ", "#### ")
+        lines.append(clean_context)
+        lines.append("")
+        
     return "\n".join(lines)
 
 
@@ -427,6 +487,8 @@ async def stage1_expert_analyses(
     on_progress: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
     persona_dataset: Optional[Dict[str, Any]] = None,
     report_dict: Optional[Dict[str, Any]] = None,
+    history: Optional[str] = None,
+    web_search_context: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Stage 1: Each persona analyzes the flight log independently.
@@ -437,6 +499,8 @@ async def stage1_expert_analyses(
         model: Model identifier override
         on_progress: Optional progress callback function
         persona_dataset: Optional persona-specific parsed data dictionary
+        history: Optional previous conversation history
+        web_search_context: Optional context retrieved from Gemini Google Search
 
     Returns:
         List of dicts with persona_id, persona info, and response
@@ -461,70 +525,53 @@ async def stage1_expert_analyses(
                 "persona_color": persona["color"],
             })
 
-        # Dynamically build user message based on persona_dataset if available
+        # Fetch academic context and dynamic vehicle profile overrides
+        academic_context = get_academic_context(pid)
+        
+        vehicle_context_override = ""
+        if report_dict:
+            try:
+                profile = build_profile_from_log(report_dict)
+                vehicle_context_override = format_vehicle_context(profile)
+            except Exception as e:
+                print(f"[Council] Error building vehicle profile: {e}")
+
+        # Assemble prompt sections
+        academic_section = f"\n## AKADEMİK VE TEKNİK REFERANS BİLGİLERİ\n{academic_context}\n"
+        web_section = f"\n## WEB ARAŞTIRMA VE BENZER ARAÇ ANALİZLERİ\n{web_search_context}\n" if web_search_context else ""
+        vehicle_section = f"\n{vehicle_context_override}\n" if vehicle_context_override else ""
+        history_section = f"\n{history}\n" if history else ""
+
+        user_message_parts = []
         if persona_dataset:
             from .log_parser import format_context_block
             context_block = format_context_block(pid, persona_dataset)
-            if user_query:
-                user_message = f"""{context_block}
-
-{rag_context}
-
-Kullanıcının sorusu: {user_query}
-
-## ZORUNLU ÇIKTI BEKLENTİSİ
-1. Yukarıdaki verileri referans tablolarıyla, RAG teknik kılavuzlarıyla ve fiziksel hata teşhis kurallarıyla karşılaştırarak DEĞERLENDİR.
-2. Her bulgu için KESİN bir yorum yap (iyi/kötü/kabul edilebilir).
-3. EN AZ 1, en fazla 5 somut REÇETE yaz (reçete formatına kesinlikle uy).
-4. Her reçetede mevcut değer ve önerilen değerleri sayısal/kesin olarak belirt.
-5. Kanıt alanını asla boş bırakma ve spekülatif ifadelerden kaçın.
-"""
-            else:
-                user_message = f"""{context_block}
-
-{rag_context}
-
-## ZORUNLU ÇIKTI BEKLENTİSİ
-1. Yukarıdaki verileri referans tablolarıyla, RAG teknik kılavuzlarıyla ve fiziksel hata teşhis kurallarıyla karşılaştırarak DEĞERLENDİR.
-2. Her bulgu için KESİN bir yorum yap (iyi/kötü/kabul edilebilir).
-3. EN AZ 1, en fazla 5 somut REÇETE yaz (reçete formatına kesinlikle uy).
-4. Her reçetede mevcut değer ve önerilen değerleri sayısal/kesin olarak belirt.
-5. Kanıt alanını asla boş bırakma ve spekülatif ifadelerden kaçın.
-"""
+            user_message_parts.append(context_block)
         else:
-            # Fallback to the shared log_report message
-            if user_query:
-                user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
-
-{rag_context}
-
-Kullanıcının sorusu: {user_query}
-
-## ZORUNLU ÇIKTI BEKLENTİSİ
-1. Log verilerini referans tablolarıyla, RAG teknik kılavuzlarıyla ve fiziksel hata teşhis kurallarıyla karşılaştırarak DEĞERLENDİR.
+            user_message_parts.append("Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.\n")
+            
+        user_message_parts.append(vehicle_section)
+        user_message_parts.append(rag_context)
+        user_message_parts.append(web_section)
+        user_message_parts.append(academic_section)
+        user_message_parts.append(history_section)
+        
+        if user_query:
+            user_message_parts.append(f"Kullanıcının son sorusu: {user_query}\n")
+            
+        user_message_parts.append("""## ZORUNLU ÇIKTI BEKLENTİSİ
+1. Yukarıdaki verileri, konuşma geçmişini, RAG teknik kılavuzlarını, akademik referansları ve web arama sonuçlarını referans alarak DEĞERLENDİR.
 2. Her bulgu için KESİN bir yorum yap (iyi/kötü/kabul edilebilir).
 3. EN AZ 1, en fazla 5 somut REÇETE yaz (reçete formatına kesinlikle uy).
 4. Her reçetede mevcut değer ve önerilen değerleri sayısal/kesin olarak belirt.
 5. Kanıt alanını asla boş bırakma ve spekülatif ifadelerden kaçın.
+6. Reçete gerekçelerinde ve bulgularda akademik/teknik kaynaklara atıfta bulun (örn. [Ref-1] veya [Web-1]).
+""")
 
---- UÇUŞ LOG VERİLERİ ---
-{log_report}
-"""
-            else:
-                user_message = f"""Aşağıda bir VTOL drone uçuş logundaki analiz verilerini bulacaksın.
+        if not persona_dataset:
+            user_message_parts.append(f"\n--- UÇUŞ LOG VERİLERİ ---\n{log_report}")
 
-{rag_context}
-
-## ZORUNLU ÇIKTI BEKLENTİSİ
-1. Log verilerini referans tablolarıyla, RAG teknik kılavuzlarıyla ve fiziksel hata teşhis kurallarıyla karşılaştırarak DEĞERLENDİR.
-2. Her bulgu için KESİN bir yorum yap (iyi/kötü/kabul edilebilir).
-3. EN AZ 1, en fazla 5 somut REÇETE yaz (reçete formatına kesinlikle uy).
-4. Her reçetede mevcut değer ve önerilen değerleri sayısal/kesin olarak belirt.
-5. Kanıt alanını asla boş bırakma ve spekülatif ifadelerden kaçın.
-
---- UÇUŞ LOG VERİLERİ ---
-{log_report}
-"""
+        user_message = "\n".join(user_message_parts)
 
         resp = await _query_persona_with_json(pid, user_message, persona["system_prompt"], active_model)
         
@@ -614,7 +661,7 @@ async def stage2_cross_evaluation(
         if not r.get("error")
     ])
 
-    eval_prompt_template = """Aşağıda 5 uzmanın bir VTOL drone uçuş loguna dair analizlerini bulacaksın.
+    eval_prompt_template = """Aşağıda 3 uzmanın bir VTOL drone uçuş loguna dair analizlerini bulacaksın.
 {query_section}
 {rag_section}
 Her uzmanın analizini kendi uzmanlık alanın perspektifinden titizlikle değerlendir ve aşağıdaki kurallara göre cevap ver:
@@ -723,6 +770,8 @@ async def stage3_chairman_synthesis(
     model: Optional[str] = None,
     persona_dataset: Optional[Dict[str, Any]] = None,
     report_dict: Optional[Dict[str, Any]] = None,
+    history: Optional[str] = None,
+    web_search_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes all analyses into final prescription.
@@ -734,6 +783,8 @@ async def stage3_chairman_synthesis(
         user_query: Optional original user query
         model: Model identifier override
         persona_dataset: Optional persona-specific parsed data dictionary
+        history: Optional previous conversation history
+        web_search_context: Optional context retrieved from Gemini Google Search
 
     Returns:
         Chairman's final synthesis
@@ -762,11 +813,28 @@ async def stage3_chairman_synthesis(
     else:
         flight_data = log_report[:4000]
 
-    chairman_prompt = f"""Sen UAV Log Analysis Council'ın Baş Mühendisisin. 5 uzman bir VTOL drone'un uçuş loglarını analiz etti ve birbirlerinin analizlerini değerlendirdi.
+    history_section = f"\n{history}\n" if history else ""
 
-{f"Kullanıcının orijinal sorusu: {user_query}" if user_query else "Görev: Kapsamlı uçuş logu analizi ve PID tuning reçetesi"}
+    # Fetch academic context for the chairman
+    academic_context = get_academic_context("chairman")
+    
+    web_section = f"\n--- WEB ARAŞTIRMA VE LİTERATÜR BAZLI REFERANSLAR ---\n{web_search_context}\n" if web_search_context else ""
+    academic_section = f"\n--- AKADEMİK VE TEKNİK REFERANS BİLGİLERİ ---\n{academic_context}\n"
 
-Tüm verileri sentezleyerek nihai raporunu oluştur. Formatına uy.
+    chairman_prompt = f"""Sen UAV Log Analysis Council'ın Baş Mühendisisin. 3 uzman bir VTOL drone'un uçuş loglarını analiz etti.
+
+Council Yapısı:
+1. Kontrol Mühendisi Deniz — PID Tuning & Kontrol Sistemleri (rate/attitude kazançları)
+2. Dr. Güvenlik — EKF, Sensör Füzyonu & Uçuş Güvenliği (EKF gates, failsafe, batarya)
+3. Saha Mühendisi Kemal — Vibrasyon, Mekanik & Elektronik Teşhis (notch filter, CoG, motor)
+
+{history_section}
+{f"Kullanıcının son sorusu: {user_query}" if user_query else "Görev: Kapsamlı uçuş logu analizi ve PID tuning reçetesi"}
+
+Tüm verileri, konuşma geçmişini, akademik referansları ve web arama sonuçlarını sentezleyerek nihai raporunu oluştur. Formatına uy.
+
+{academic_section}
+{web_section}
 
 --- AŞAMA 1: UZMAN ANALİZLERİ ---
 {stage1_text}
@@ -794,7 +862,7 @@ Tüm verileri sentezleyerek nihai raporunu oluştur. Formatına uy.
             validated_recipes.append(val_r)
         resp["recipes"] = validated_recipes
 
-    rendered_report = render_chairman_report(resp["recipes"])
+    rendered_report = render_chairman_report(resp["recipes"], report_dict, web_search_context)
 
     return {
         "persona_name": CHAIRMAN_PERSONA["name"],
@@ -817,6 +885,8 @@ async def run_uav_council(
     model: Optional[str] = None,
     persona_dataset: Optional[Dict[str, Any]] = None,
     report_dict: Optional[Dict[str, Any]] = None,
+    history: Optional[str] = None,
+    web_search_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the complete 3-stage UAV analysis council.
@@ -827,12 +897,16 @@ async def run_uav_council(
         model: Optional model override
         persona_dataset: Optional persona-specific parsed data dictionary
         report_dict: Optional raw parsed log report dictionary for verification
+        history: Optional previous conversation history
+        web_search_context: Optional context retrieved from Gemini Google Search
 
     Returns:
         Dict with stage1, stage2, stage3 results
     """
     # Stage 1
-    stage1 = await stage1_expert_analyses(log_report, user_query, model, persona_dataset=persona_dataset, report_dict=report_dict)
+    stage1 = await stage1_expert_analyses(
+        log_report, user_query, model, persona_dataset=persona_dataset, report_dict=report_dict, history=history, web_search_context=web_search_context
+    )
 
     if not any(not r.get("error") for r in stage1):
         return {
@@ -845,7 +919,9 @@ async def run_uav_council(
     stage2 = await stage2_cross_evaluation(log_report, stage1, user_query, model, persona_dataset=persona_dataset, report_dict=report_dict)
 
     # Stage 3
-    stage3 = await stage3_chairman_synthesis(log_report, stage1, stage2, user_query, model, persona_dataset=persona_dataset, report_dict=report_dict)
+    stage3 = await stage3_chairman_synthesis(
+        log_report, stage1, stage2, user_query, model, persona_dataset=persona_dataset, report_dict=report_dict, history=history, web_search_context=web_search_context
+    )
 
     return {
         "stage1": stage1,
