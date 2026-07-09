@@ -81,10 +81,170 @@ def file_hash(filepath: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Flight Window Detection (Takeoff → Landing)
+# ---------------------------------------------------------------------------
+
+def detect_flight_window(ulog: ULog) -> Dict[str, Any]:
+    """Detect the actual flight window (takeoff to landing) from the ULog.
+
+    Uses vehicle_land_detected topic as primary source (landed: 1→0 = takeoff,
+    0→1 = landing). Falls back to arming_state if land detection is unavailable.
+
+    If multiple flight segments exist, selects the longest one.
+
+    Returns a dict with takeoff_us, landing_us, flight_duration_s,
+    total_duration_s, and detection_method.
+    """
+    start_ts = ulog.start_timestamp
+    total_duration_s = round((ulog.last_timestamp - start_ts) / 1e6, 1)
+
+    result = {
+        "takeoff_us": start_ts,
+        "landing_us": ulog.last_timestamp,
+        "flight_duration_s": total_duration_s,
+        "total_duration_s": total_duration_s,
+        "detection_method": "none",
+        "flight_segments": [],
+    }
+
+    # --- Primary: vehicle_land_detected ---
+    ld_data = _get_topic_data(ulog, "vehicle_land_detected")
+    if ld_data is not None and "landed" in ld_data:
+        landed = np.asarray(ld_data["landed"], dtype=int)
+        ts = np.asarray(ld_data["timestamp"])
+
+        if len(landed) > 1:
+            transitions = np.diff(landed)
+            # Takeoff: landed goes from 1 to 0 (diff == -1)
+            takeoff_indices = np.where(transitions == -1)[0] + 1
+            # Landing: landed goes from 0 to 1 (diff == 1)
+            landing_indices = np.where(transitions == 1)[0] + 1
+
+            # Handle case where log starts already in the air
+            if landed[0] == 0:
+                takeoff_indices = np.concatenate([[0], takeoff_indices])
+
+            # Build flight segments
+            segments = []
+            if len(takeoff_indices) > 0:
+                for to_idx in takeoff_indices:
+                    # Find the next landing after this takeoff
+                    later_landings = landing_indices[landing_indices > to_idx]
+                    if len(later_landings) > 0:
+                        ld_idx = later_landings[0]
+                        segments.append((int(ts[to_idx]), int(ts[ld_idx])))
+                    else:
+                        # Never landed within log — use last timestamp
+                        segments.append((int(ts[to_idx]), int(ts[-1])))
+
+            if segments:
+                # Pick the longest segment
+                longest = max(segments, key=lambda s: s[1] - s[0])
+                flight_dur = round((longest[1] - longest[0]) / 1e6, 1)
+                result.update({
+                    "takeoff_us": longest[0],
+                    "landing_us": longest[1],
+                    "flight_duration_s": flight_dur,
+                    "detection_method": "vehicle_land_detected",
+                    "flight_segments": [
+                        {"takeoff_us": s[0], "landing_us": s[1],
+                         "duration_s": round((s[1] - s[0]) / 1e6, 1)}
+                        for s in segments
+                    ],
+                })
+                return result
+
+    # --- Fallback: arming_state ---
+    vs_data = _get_topic_data(ulog, "vehicle_status")
+    if vs_data is not None and "arming_state" in vs_data:
+        arming = np.asarray(vs_data["arming_state"], dtype=int)
+        ts = np.asarray(vs_data["timestamp"])
+
+        armed_mask = arming == 2
+        if np.any(armed_mask):
+            transitions = np.diff(armed_mask.astype(int))
+            arm_indices = np.where(transitions == 1)[0] + 1
+            disarm_indices = np.where(transitions == -1)[0] + 1
+
+            segments = []
+            # Handle case where log starts already armed
+            if armed_mask[0]:
+                arm_indices = np.concatenate([[0], arm_indices])
+
+            for arm_idx in arm_indices:
+                later_disarms = disarm_indices[disarm_indices > arm_idx]
+                if len(later_disarms) > 0:
+                    segments.append((int(ts[arm_idx]), int(ts[later_disarms[0]])))
+                else:
+                    segments.append((int(ts[arm_idx]), int(ts[-1])))
+
+            if segments:
+                longest = max(segments, key=lambda s: s[1] - s[0])
+                flight_dur = round((longest[1] - longest[0]) / 1e6, 1)
+                result.update({
+                    "takeoff_us": longest[0],
+                    "landing_us": longest[1],
+                    "flight_duration_s": flight_dur,
+                    "detection_method": "arming_state",
+                    "flight_segments": [
+                        {"takeoff_us": s[0], "landing_us": s[1],
+                         "duration_s": round((s[1] - s[0]) / 1e6, 1)}
+                        for s in segments
+                    ],
+                })
+                return result
+
+    return result
+
+
+def _crop_topic_data(data: Dict, start_us: int, end_us: int) -> Optional[Dict]:
+    """Crop a topic's raw data dictionary to [start_us, end_us] time window.
+
+    Filters all numpy array fields using the timestamp mask.
+    Returns None if no data remains after cropping.
+    """
+    if data is None or "timestamp" not in data:
+        return None
+
+    ts = np.asarray(data["timestamp"])
+    mask = (ts >= start_us) & (ts <= end_us)
+
+    if not np.any(mask):
+        return None
+
+    cropped = {}
+    for key, values in data.items():
+        arr = np.asarray(values)
+        if len(arr) == len(ts):
+            cropped[key] = arr[mask]
+        else:
+            cropped[key] = arr  # Keep non-aligned fields as-is
+    return cropped
+
+
+def _get_flight_data(ulog: ULog, topic_name: str,
+                     flight_window: Optional[Dict] = None,
+                     instance: int = 0) -> Optional[Dict]:
+    """Get topic data cropped to the flight window.
+
+    Convenience wrapper: _get_topic_data + _crop_topic_data.
+    If flight_window is None or detection_method is 'none', returns uncropped data.
+    """
+    data = _get_topic_data(ulog, topic_name, instance)
+    if data is None:
+        return None
+
+    if flight_window is not None and flight_window.get("detection_method") != "none":
+        return _crop_topic_data(data, flight_window["takeoff_us"], flight_window["landing_us"])
+
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Core Extraction Functions
 # ---------------------------------------------------------------------------
 
-def extract_flight_summary(ulog: ULog, filepath: str) -> Dict[str, Any]:
+def extract_flight_summary(ulog: ULog, filepath: str, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract high-level flight summary metadata."""
     summary: Dict[str, Any] = {}
 
@@ -92,10 +252,25 @@ def extract_flight_summary(ulog: ULog, filepath: str) -> Dict[str, Any]:
     summary["file"] = os.path.basename(filepath)
     summary["file_size_mb"] = round(os.path.getsize(filepath) / 1024 / 1024, 1)
 
-    # Duration
+    # Duration — use flight window if available
     start_ts = ulog.start_timestamp
     last_ts = ulog.last_timestamp
-    duration_s = (last_ts - start_ts) / 1e6
+    total_duration_s = (last_ts - start_ts) / 1e6
+    summary["total_log_duration_s"] = round(total_duration_s, 1)
+
+    if flight_window and flight_window.get("detection_method") != "none":
+        duration_s = flight_window["flight_duration_s"]
+        summary["flight_window"] = {
+            "takeoff_s": round((flight_window["takeoff_us"] - start_ts) / 1e6, 1),
+            "landing_s": round((flight_window["landing_us"] - start_ts) / 1e6, 1),
+            "flight_duration_s": flight_window["flight_duration_s"],
+            "flight_percentage": round(flight_window["flight_duration_s"] / total_duration_s * 100, 1) if total_duration_s > 0 else 0,
+            "detection_method": flight_window["detection_method"],
+            "segments": flight_window.get("flight_segments", []),
+        }
+    else:
+        duration_s = total_duration_s
+
     summary["duration_s"] = round(duration_s, 1)
     summary["duration_str"] = f"{int(duration_s // 60)}m {int(duration_s % 60)}s"
 
@@ -109,7 +284,7 @@ def extract_flight_summary(ulog: ULog, filepath: str) -> Dict[str, Any]:
     summary["param_count"] = len(ulog.initial_parameters)
 
     # Vehicle status
-    vs = _get_topic_data(ulog, "vehicle_status")
+    vs = _get_flight_data(ulog, "vehicle_status", flight_window)
     if vs is not None:
         summary["is_vtol"] = bool(vs.get("is_vtol", [0])[0])
         summary["vehicle_type"] = int(vs.get("vehicle_type", [0])[0])
@@ -139,8 +314,8 @@ def extract_flight_summary(ulog: ULog, filepath: str) -> Dict[str, Any]:
         pfc = vs.get("pre_flight_checks_pass", [])
         summary["preflight_pass"] = all(bool(p) for p in pfc) if len(pfc) > 0 else None
 
-    # Position data for altitude
-    vlp = _get_topic_data(ulog, "vehicle_local_position")
+    # Position data for altitude — use flight window
+    vlp = _get_flight_data(ulog, "vehicle_local_position", flight_window)
     if vlp is not None:
         z = np.asarray(vlp.get("z", [0]))
         valid_z = z[np.isfinite(z)]
@@ -151,12 +326,12 @@ def extract_flight_summary(ulog: ULog, filepath: str) -> Dict[str, Any]:
     return summary
 
 
-def extract_attitude_tracking(ulog: ULog) -> Dict[str, Any]:
+def extract_attitude_tracking(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract attitude tracking performance (actual vs setpoint)."""
     result = {}
 
-    att = _get_topic_data(ulog, "vehicle_attitude")
-    att_sp = _get_topic_data(ulog, "vehicle_attitude_setpoint")
+    att = _get_flight_data(ulog, "vehicle_attitude", flight_window)
+    att_sp = _get_flight_data(ulog, "vehicle_attitude_setpoint", flight_window)
 
     if att is None or att_sp is None:
         return {"error": "Attitude data not available"}
@@ -214,8 +389,8 @@ def extract_attitude_tracking(ulog: ULog) -> Dict[str, Any]:
         }
 
     # Rate tracking (angular velocity vs setpoint)
-    ang_vel = _get_topic_data(ulog, "vehicle_angular_velocity")
-    rate_sp = _get_topic_data(ulog, "vehicle_rates_setpoint")
+    ang_vel = _get_flight_data(ulog, "vehicle_angular_velocity", flight_window)
+    rate_sp = _get_flight_data(ulog, "vehicle_rates_setpoint", flight_window)
 
     if ang_vel is not None and rate_sp is not None:
         df_rate = pd.DataFrame({
@@ -249,9 +424,9 @@ def extract_attitude_tracking(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
-def extract_battery_data(ulog: ULog) -> Dict[str, Any]:
+def extract_battery_data(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract battery telemetry and anomalies."""
-    bs = _get_topic_data(ulog, "battery_status")
+    bs = _get_flight_data(ulog, "battery_status", flight_window)
     if bs is None:
         return {"error": "Battery data not available"}
 
@@ -300,12 +475,12 @@ def extract_battery_data(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
-def extract_vibration_data(ulog: ULog) -> Dict[str, Any]:
+def extract_vibration_data(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract vibration analysis from IMU data using FFT."""
     result = {}
 
     # Try sensor_combined first (higher sample rate)
-    sc = _get_topic_data(ulog, "sensor_combined")
+    sc = _get_flight_data(ulog, "sensor_combined", flight_window)
     if sc is not None and len(sc.get("timestamp", [])) > 50:
         ts = _timestamps_to_seconds(sc["timestamp"])
         dt = np.median(np.diff(ts))
@@ -347,7 +522,7 @@ def extract_vibration_data(ulog: ULog) -> Dict[str, Any]:
 
     # Gyro vibration
     for instance in range(3):
-        gyro = _get_topic_data(ulog, "sensor_gyro", instance)
+        gyro = _get_flight_data(ulog, "sensor_gyro", flight_window, instance)
         if gyro is not None and len(gyro.get("timestamp", [])) > 20:
             for axis in ["x", "y", "z"]:
                 if axis in gyro:
@@ -362,7 +537,7 @@ def extract_vibration_data(ulog: ULog) -> Dict[str, Any]:
 
     # IMU clipping
     for instance in range(3):
-        accel = _get_topic_data(ulog, "sensor_accel", instance)
+        accel = _get_flight_data(ulog, "sensor_accel", flight_window, instance)
         if accel is not None:
             total_clips = 0
             for i in range(3):
@@ -376,12 +551,12 @@ def extract_vibration_data(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
-def extract_ekf_data(ulog: ULog) -> Dict[str, Any]:
+def extract_ekf_data(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract EKF health and innovation diagnostics."""
     result = {}
 
     # Innovation test ratios
-    itr = _get_topic_data(ulog, "estimator_innovation_test_ratios")
+    itr = _get_flight_data(ulog, "estimator_innovation_test_ratios", flight_window)
     if itr is not None:
         for key_prefix, label in [
             ("gps_hvel", "GPS Horizontal Velocity"),
@@ -407,7 +582,7 @@ def extract_ekf_data(ulog: ULog) -> Dict[str, Any]:
                 }
 
     # Estimator status flags
-    esf = _get_topic_data(ulog, "estimator_status_flags")
+    esf = _get_flight_data(ulog, "estimator_status_flags", flight_window)
     if esf is not None:
         flags = {}
         for key in ["cs_gnss_pos", "cs_gnss_vel", "cs_gnss_hgt",
@@ -418,7 +593,7 @@ def extract_ekf_data(ulog: ULog) -> Dict[str, Any]:
         result["estimator_flags"] = flags
 
     # GPS quality
-    gps = _get_topic_data(ulog, "sensor_gps") or _get_topic_data(ulog, "vehicle_gps_position")
+    gps = _get_flight_data(ulog, "sensor_gps", flight_window) or _get_flight_data(ulog, "vehicle_gps_position", flight_window)
     if gps is not None:
         for key in ["fix_type", "satellites_used", "hdop", "vdop"]:
             if key in gps:
@@ -427,12 +602,12 @@ def extract_ekf_data(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
-def extract_actuator_data(ulog: ULog) -> Dict[str, Any]:
+def extract_actuator_data(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract motor and actuator output data."""
     result = {}
 
     # Actuator motors
-    am = _get_topic_data(ulog, "actuator_motors")
+    am = _get_flight_data(ulog, "actuator_motors", flight_window)
     if am is not None:
         motor_stats = {}
         for i in range(12):
@@ -456,7 +631,7 @@ def extract_actuator_data(ulog: ULog) -> Dict[str, Any]:
             }
 
     # Actuator outputs
-    ao = _get_topic_data(ulog, "actuator_outputs")
+    ao = _get_flight_data(ulog, "actuator_outputs", flight_window)
     if ao is not None:
         output_stats = {}
         for i in range(16):
@@ -505,12 +680,12 @@ def extract_pid_parameters(ulog: ULog) -> Dict[str, Any]:
     return pid_params
 
 
-def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
+def extract_failsafe_events(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract failsafe and event data."""
     result = {}
 
     # Failsafe flags
-    ff = _get_topic_data(ulog, "failsafe_flags")
+    ff = _get_flight_data(ulog, "failsafe_flags", flight_window)
     if ff is not None:
         ts = _timestamps_to_seconds(ff["timestamp"])
         result["failsafe_timeline"] = {
@@ -519,7 +694,7 @@ def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
         }
 
     # Vehicle status for failsafe
-    vs = _get_topic_data(ulog, "vehicle_status")
+    vs = _get_flight_data(ulog, "vehicle_status", flight_window)
     if vs is not None:
         failsafe_vals = vs.get("failsafe", [])
         if len(failsafe_vals) > 0:
@@ -527,7 +702,7 @@ def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
             result["failsafe_active_count"] = int(failsafe_active)
 
     # Failure detector
-    fd = _get_topic_data(ulog, "failure_detector_status")
+    fd = _get_flight_data(ulog, "failure_detector_status", flight_window)
     if fd is not None:
         result["failure_detector"] = {
             "sample_count": len(fd.get("timestamp", [])),
@@ -543,6 +718,9 @@ def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
     if hasattr(ulog, 'logged_messages'):
         messages = []
         for msg in ulog.logged_messages:
+            if flight_window and flight_window.get("detection_method") != "none":
+                if msg.timestamp < flight_window["takeoff_us"] or msg.timestamp > flight_window["landing_us"]:
+                    continue
             messages.append({
                 "timestamp_s": round((msg.timestamp - ulog.start_timestamp) / 1e6, 2),
                 "level": msg.log_level_str() if hasattr(msg, 'log_level_str') else str(msg.log_level),
@@ -554,10 +732,10 @@ def extract_failsafe_events(ulog: ULog) -> Dict[str, Any]:
     return result
 
 
-def extract_wind_data(ulog: ULog) -> Dict[str, Any]:
+def extract_wind_data(ulog: ULog, flight_window: Optional[Dict] = None) -> Dict[str, Any]:
     """Extract wind speed and variance from wind_estimate topic."""
     result = {}
-    we = _get_topic_data(ulog, "wind_estimate")
+    we = _get_flight_data(ulog, "wind_estimate", flight_window)
     if we is not None and "windspeed_north" in we and "windspeed_east" in we:
         try:
             vn = np.asarray(we["windspeed_north"])
@@ -594,22 +772,36 @@ def extract_wind_data(ulog: ULog) -> Dict[str, Any]:
 def parse_single_log(filepath: str) -> Dict[str, Any]:
     """Parse a single ULog file and return comprehensive analysis data.
 
+    Detects the actual flight window (takeoff → landing) and restricts
+    all telemetry analysis to that time period.
+
     Returns a dictionary with all extracted data sections.
     """
     ulog = ULog(filepath)
 
+    # Detect actual flight window (takeoff → landing)
+    flight_window = detect_flight_window(ulog)
+    fw = flight_window
+    method = fw.get("detection_method", "none")
+    if method != "none":
+        pct = round(fw["flight_duration_s"] / fw["total_duration_s"] * 100, 1) if fw["total_duration_s"] > 0 else 0
+        print(f"[FlightWindow] {method}: uçuş={fw['flight_duration_s']}s / toplam={fw['total_duration_s']}s ({pct}%)")
+    else:
+        print("[FlightWindow] Uçuş penceresi tespit edilemedi, tüm log verisi kullanılıyor.")
+
     report = {
         "filepath": filepath,
         "parsed_at": datetime.now().isoformat(),
-        "summary": extract_flight_summary(ulog, filepath),
-        "attitude_tracking": extract_attitude_tracking(ulog),
-        "battery": extract_battery_data(ulog),
-        "vibration": extract_vibration_data(ulog),
-        "ekf": extract_ekf_data(ulog),
-        "actuators": extract_actuator_data(ulog),
+        "flight_window": flight_window,
+        "summary": extract_flight_summary(ulog, filepath, flight_window),
+        "attitude_tracking": extract_attitude_tracking(ulog, flight_window),
+        "battery": extract_battery_data(ulog, flight_window),
+        "vibration": extract_vibration_data(ulog, flight_window),
+        "ekf": extract_ekf_data(ulog, flight_window),
+        "actuators": extract_actuator_data(ulog, flight_window),
         "pid_parameters": extract_pid_parameters(ulog),
-        "failsafe_events": extract_failsafe_events(ulog),
-        "wind": extract_wind_data(ulog),
+        "failsafe_events": extract_failsafe_events(ulog, flight_window),
+        "wind": extract_wind_data(ulog, flight_window),
     }
 
     # Add the persona specific datasets
@@ -638,6 +830,20 @@ def generate_text_report(report: Dict[str, Any]) -> str:
     lines.append(f"  Preflight Checks: {'PASS' if s.get('preflight_pass') else 'FAIL/UNKNOWN'}")
     lines.append(f"  Max Altitude: {s.get('max_altitude_m', '?')}m")
     lines.append(f"  Nav States: {' → '.join(s.get('nav_state_transitions', ['?']))}")
+
+    # Flight window info
+    fw = s.get("flight_window")
+    if fw:
+        lines.append("\n## FLIGHT WINDOW (TAKEOFF → LANDING)")
+        lines.append(f"  Total Log Duration: {s.get('total_log_duration_s', '?')}s")
+        lines.append(f"  Flight Duration: {fw['flight_duration_s']}s ({fw['flight_percentage']}% of log)")
+        lines.append(f"  Takeoff: t={fw['takeoff_s']}s | Landing: t={fw['landing_s']}s")
+        lines.append(f"  Detection: {fw['detection_method']}")
+        if len(fw.get("segments", [])) > 1:
+            lines.append(f"  Segments: {len(fw['segments'])} flight segments detected")
+            for i, seg in enumerate(fw["segments"]):
+                lines.append(f"    Segment {i+1}: {seg['duration_s']}s")
+        lines.append(f"  ℹ️ Tüm analizler SADECE uçuş penceresi verilerini kullanmaktadır.")
 
     # Wind & Atmospheric conditions
     wind = report.get("wind", {})
@@ -1037,8 +1243,9 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
         ]
 
     # --- GENEL (General Flight Dataset, shared by all personas) ---
+    flight_window = report.get("flight_window")
     genel = {"veri_durumu": "ok"}
-    pos_data = _get_topic_data(ulog, "vehicle_local_position")
+    pos_data = _get_flight_data(ulog, "vehicle_local_position", flight_window)
     if pos_data is None:
         genel["altitude"] = "veri yok (vehicle_local_position bulunamadı)"
     else:
@@ -1055,13 +1262,21 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
         else:
             genel["hover_xy_stddev_m"] = 0.0
 
-    status_data = _get_topic_data(ulog, "vehicle_status")
+    status_data = _get_flight_data(ulog, "vehicle_status", flight_window)
     if status_data is not None and "nav_state" in status_data:
         states, counts = np.unique(status_data["nav_state"], return_counts=True)
         genel["nav_state_gozlemleri"] = {int(s): int(c) for s, c in zip(states, counts)}
 
     genel["actuators"] = report.get("actuators", {})
     genel["wind"] = report.get("wind", {})
+    # Add flight window info to genel for persona context
+    if flight_window and flight_window.get("detection_method") != "none":
+        genel["ucus_penceresi"] = {
+            "ucus_suresi_s": flight_window["flight_duration_s"],
+            "toplam_log_suresi_s": flight_window["total_duration_s"],
+            "ucus_yuzdesi": round(flight_window["flight_duration_s"] / flight_window["total_duration_s"] * 100, 1) if flight_window["total_duration_s"] > 0 else 0,
+            "tespit_yontemi": flight_window["detection_method"],
+        }
     dataset["genel"] = genel
 
     # --- 1. PID Tuning Expert (Kontrol Mühendisi Deniz) Dataset ---
@@ -1089,7 +1304,7 @@ def build_persona_dataset(ulog: ULog, report: Dict[str, Any]) -> Dict[str, Any]:
     
     # Run Gyro FFT just like ornek_log_extractor.py
     gyro_fft_success = False
-    gyro = _get_topic_data(ulog, "sensor_combined") or _get_topic_data(ulog, "sensor_gyro")
+    gyro = _get_flight_data(ulog, "sensor_combined", flight_window) or _get_flight_data(ulog, "sensor_gyro", flight_window)
     if gyro is not None:
         field = "x" if "x" in gyro else "gyro_rad[0]"
         if field in gyro:

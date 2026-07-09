@@ -12,7 +12,7 @@ function App() {
   const [personas, setPersonas] = useState(null);
 
   const [abortController, setAbortController] = useState(null);
-  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash'); // Default first choice Gemini 3.5 Flash
+  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash'); // Default first choice Gemini 2.5 Flash
 
   // Conversation & Chat states
   const [currentConversationId, setCurrentConversationId] = useState(null);
@@ -195,7 +195,7 @@ function App() {
 
           case 'stage1_persona_start':
             setAnalysisState((prev) => {
-              const updated = prev.stage1?.map(p => 
+              const updated = prev.stage1?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
               ) || [];
               return { ...prev, stage1: updated };
@@ -204,7 +204,7 @@ function App() {
 
           case 'stage1_persona_complete':
             setAnalysisState((prev) => {
-              const updated = prev.stage1?.map(p => 
+              const updated = prev.stage1?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
               ) || [];
               return { ...prev, stage1: updated };
@@ -240,7 +240,7 @@ function App() {
 
           case 'stage2_persona_start':
             setAnalysisState((prev) => {
-              const updated = prev.stage2?.map(p => 
+              const updated = prev.stage2?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
               ) || [];
               return { ...prev, stage2: updated };
@@ -249,7 +249,7 @@ function App() {
 
           case 'stage2_persona_complete':
             setAnalysisState((prev) => {
-              const updated = prev.stage2?.map(p => 
+              const updated = prev.stage2?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
               ) || [];
               return { ...prev, stage2: updated };
@@ -398,7 +398,7 @@ function App() {
 
           case 'stage1_persona_start':
             setAnalysisState((prev) => {
-              const updated = prev.stage1?.map(p => 
+              const updated = prev.stage1?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, status: 'analyzing' } : p
               ) || [];
               return { ...prev, stage1: updated };
@@ -407,7 +407,7 @@ function App() {
 
           case 'stage1_persona_complete':
             setAnalysisState((prev) => {
-              const updated = prev.stage1?.map(p => 
+              const updated = prev.stage1?.map(p =>
                 p.persona_id === event.persona_id ? { ...p, ...event.data, status: 'complete' } : p
               ) || [];
               return { ...prev, stage1: updated };

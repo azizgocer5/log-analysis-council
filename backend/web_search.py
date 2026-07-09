@@ -6,7 +6,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from .config import OPENROUTER_API_KEY
 
-async def query_gemini_with_search(prompt: str, model: str = "gemini-2.5-flash") -> Dict[str, Any]:
+async def query_gemini_with_search(prompt: str, model: str = "gemini-3.5-flash") -> Dict[str, Any]:
     """
     Query Gemini 1.5 with Google Search Grounding enabled.
     Returns a dictionary containing:

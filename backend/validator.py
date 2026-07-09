@@ -62,6 +62,8 @@ def lookup_value(report: Dict[str, Any], name: str) -> Tuple[Optional[float], bo
     def recursive_find(d: Any, target: str) -> Tuple[Optional[float], bool]:
         if isinstance(d, dict):
             for k, v in d.items():
+                if not isinstance(k, str):
+                    continue
                 if k.upper() == target:
                     if isinstance(v, (int, float)):
                         return float(v), True
